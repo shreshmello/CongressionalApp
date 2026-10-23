@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Analysis Results | MobilityMind</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='styles.css') }}"
+    >
+</head>
+
+<body>
+
+    <div class="shell">
+
+        <header class="topbar">
+
+            <a class="brand" href="/">
+                <span class="brand-mark">M</span>
+
+                <span>
+                    mobility<span class="brand-light">mind</span>
+                </span>
+            </a>
+
+            <span class="tag">
+                RESEARCH PROTOTYPE
+            </span>
+
+        </header>
+
+
+        <main>
+
+            <a class="back-link" href="/">
+                ← New analysis
+            </a>
+
+
+            <section class="hero results-hero">
+
+                <div class="eyebrow">
+                    ANALYSIS SUMMARY
+                </div>
+
+                {% if result.status == "complete" %}
+
+                    <h1>
+                        Movement features<br>
+                        <span>calculated.</span>
+                    </h1>
+
+                {% else %}
+
+                    <h1>
+                        More usable video<br>
+                        <span>needed.</span>
+                    </h1>
+
+                {% endif %}
+
+                <p class="hero-copy">
+                    {{ result.message }}
+                </p>
+
+            </section>
+
+
+            <section class="summary-grid">
+
+                <article class="summary-card">
+
+                    <span class="metric-label">
+                        Frames processed
+                    </span>
+
+                    <strong>
+                        {{ result.frames_seen }}
+                    </strong>
+
+                </article>
+
+
+                <article class="summary-card">
+
+                    <span class="metric-label">
+                        Frames with usable pose
+                    </span>
+
+                    <strong>
+                        {{ result.detected_frames }}
+                    </strong>
+
+                </article>
+
+
+                <article class="summary-card">
+
+                    <span class="metric-label">
+                        Pose detection rate
+                    </span>
+
+                    <strong>
+                        {{ result.detection_rate }}%
+                    </strong>
+
+                </article>
+
+            </section>
+
+
+            {% if result.metrics %}
+
+                <section class="section-heading">
+
+                    <div>
+
+                        <div class="eyebrow">
+                            EXPERIMENTAL FEATURES
+                        </div>
+
+                        <h2>
+                            Movement measurements
+                        </h2>
+
+                    </div>
+
+                </section>
+
+
+                <section class="metric-grid">
+
+                    {% for metric in result.metrics %}
+
+                        <article class="metric-card">
+
+                            <span class="metric-label">
+                                {{ metric.name }}
+                            </span>
+
+                            <strong>
+                                {{ metric.value }}
+                            </strong>
+
+                            <p>
+                                {{ metric.description }}
+                            </p>
+
+                        </article>
+
+                    {% endfor %}
+
+                </section>
+
+            {% endif %}
+
+
+            <section class="notice warning">
+
+                <strong>
+                    How to interpret these results
+                </strong>
+
+                <p>
+                    These measurements are exploratory features
+                    calculated from image coordinates. They can
+                    be affected by camera position, perspective,
+                    visibility, and recording conditions.
+
+                    They are not validated clinical measurements
+                    and should not be interpreted as a fall-risk
+                    score or medical diagnosis.
+                </p>
+
+            </section>
+
+
+            <section class="info-panel">
+
+                <h2>
+                    Quality notes and next steps
+                </h2>
+
+                <ul>
+
+                    {% for note in result.notes %}
+
+                        <li>
+                            {{ note }}
+                        </li>
+
+                    {% endfor %}
+
+                </ul>
+
+            </section>
+
+
+            <a
+                class="button button-inline"
+                href="/"
+            >
+
+                Analyze another clip
+
+                <span>→</span>
+
+            </a>
+
+        </main>
+
+
+        <footer>
+            MobilityMind · Early research prototype
+        </footer>
+
+    </div>
+
+</body>
+</html>
