@@ -1,0 +1,28 @@
+# Python virtual environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Environment variables and secrets
+.env
+
+# MediaPipe model files
+models/*.task
+models/*.download
+
+# Uploaded videos
+uploads/*
+!uploads/.gitkeep
+
+# Analysis results
+results/*
+!results/.gitkeep
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+.idea/
