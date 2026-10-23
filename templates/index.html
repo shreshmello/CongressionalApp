@@ -1,251 +1,434 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#edf2e8">
+  <title>MobilityMind — Movement observation</title>
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
 
-    <title>MobilityMind | Movement Analysis</title>
-
-    <link
-        rel="stylesheet"
-        href="{{ url_for('static', filename='styles.css') }}"
-    >
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
 </head>
 
 <body>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="MobilityMind home">
+      <span class="brand-mark" aria-hidden="true">m</span>
+      <span>mobility<span class="brand-light">mind</span></span>
+    </a>
 
-    <div class="shell">
+    <nav aria-label="Main navigation">
+      <a href="#how-it-works">How it works</a>
+      <a href="#screening">Screening questions</a>
+      <a href="#history">Observations</a>
+    </nav>
 
-        <header class="topbar">
+    <span class="privacy-pill">
+      <span class="dot"></span>
+      Camera processing stays in this browser
+    </span>
+  </header>
 
-            <a class="brand" href="/">
-                <span class="brand-mark">M</span>
+  <main class="page-shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">MOVEMENT OBSERVATION PROTOTYPE</p>
 
-                <span>
-                    mobility<span class="brand-light">mind</span>
-                </span>
-            </a>
+        <h1>Notice movement.<br><span>Understand change.</span></h1>
 
-            <span class="tag">
-                RESEARCH PROTOTYPE
+        <p class="hero-text">
+          MobilityMind explores visible movement patterns using your
+          device camera and helps organize fall-related screening observations.
+        </p>
+
+        <div class="hero-actions">
+          <a class="button button-primary" href="#live-monitor">
+            Start live observation <span aria-hidden="true">→</span>
+          </a>
+          <button class="button button-secondary" id="demoButton" type="button">
+            Try demo mode
+          </button>
+        </div>
+
+        <p class="microcopy">
+          Research prototype only. Not a medical device, emergency monitor,
+          or validated fall-prediction system.
+        </p>
+      </div>
+
+      <aside class="hero-note">
+        <div class="note-icon" aria-hidden="true">✳</div>
+        <p class="note-title">Designed around privacy</p>
+        <p class="note-text">
+          Pose processing happens in your browser. This prototype does not
+          upload or save camera frames.
+        </p>
+        <div class="note-divider"></div>
+        <p class="note-small">
+          Use only with informed consent. Do not rely on this page to prevent,
+          predict, or respond to a fall.
+        </p>
+      </aside>
+    </section>
+
+    <section class="notice" role="note">
+      <strong>Safety note</strong>
+      <span>
+        This prototype can flag sudden changes in detected body position,
+        but those changes are not proof that a person is about to fall.
+        It can miss events and produce false alerts. It must not be used
+        as an emergency alert system.
+      </span>
+    </section>
+
+    <section class="workspace" id="live-monitor">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">01 / LIVE CAMERA</p>
+          <h2>Movement observation</h2>
+          <p class="section-subtitle">
+            Use a stable camera position in a clear space. The person should
+            not perform risky movements for testing.
+          </p>
+        </div>
+
+        <span class="status-chip" id="cameraStatus">
+          <span class="status-dot"></span> Camera off
+        </span>
+      </div>
+
+      <div class="monitor-grid">
+        <div class="camera-card">
+          <div class="camera-topline">
+            <span class="camera-label">
+              <span class="live-dot"></span> LIVE VIEW
             </span>
-
-        </header>
-
-
-        <main>
-
-            <section class="hero">
-
-                <div class="eyebrow">
-                    MOVEMENT, MADE MORE UNDERSTANDABLE
-                </div>
-
-                <h1>
-                    Notice movement.<br>
-                    <span>Understand change.</span>
-                </h1>
-
-                <p class="hero-copy">
-                    Analyze movement through computer vision.
-                    Explore movement measurements and identify
-                    changes that may warrant further attention.
-                </p>
-
-            </section>
-
-
-            {% with messages = get_flashed_messages() %}
-
-                {% if messages %}
-
-                    <div class="flash">
-
-                        {% for message in messages %}
-
-                            <p>{{ message }}</p>
-
-                        {% endfor %}
-
-                    </div>
-
-                {% endif %}
-
-            {% endwith %}
-
-
-            <section class="upload-card">
-
-                <div class="card-heading">
-
-                    <div>
-
-                        <div class="eyebrow">
-                            NEW SESSION
-                        </div>
-
-                        <h2>
-                            Analyze a movement clip
-                        </h2>
-
-                    </div>
-
-                    <div class="icon-circle">
-                        ↗
-                    </div>
-
-                </div>
-
-
-                <form
-                    action="{{ url_for('analyze') }}"
-                    method="POST"
-                    enctype="multipart/form-data"
-                    id="upload-form"
-                >
-
-                    <label
-                        class="dropzone"
-                        for="video"
-                    >
-
-                        <span class="upload-icon">
-                            ↑
-                        </span>
-
-                        <strong id="file-label">
-                            Choose a video to upload
-                        </strong>
-
-                        <span>
-                            MP4, MOV, AVI or M4V · Up to 150 MB
-                        </span>
-
-                        <input
-                            type="file"
-                            id="video"
-                            name="video"
-                            accept=".mp4,.mov,.avi,.m4v,video/*"
-                            required
-                        >
-
-                    </label>
-
-
-                    <button
-                        class="button"
-                        type="submit"
-                        id="submit-button"
-                    >
-
-                        Analyze movement
-
-                        <span>→</span>
-
-                    </button>
-
-                </form>
-
-
-                <p class="privacy-note">
-                    <span>●</span>
-                    Uploaded videos are deleted after processing.
-                </p>
-
-            </section>
-
-
-            <section class="how-grid">
-
-                <article class="info-card">
-
-                    <div class="number">
-                        01
-                    </div>
-
-                    <h3>
-                        Detect
-                    </h3>
-
-                    <p>
-                        MediaPipe estimates body landmarks
-                        throughout the video.
-                    </p>
-
-                </article>
-
-
-                <article class="info-card">
-
-                    <div class="number">
-                        02
-                    </div>
-
-                    <h3>
-                        Measure
-                    </h3>
-
-                    <p>
-                        Our analysis code calculates experimental
-                        movement features from those landmarks.
-                    </p>
-
-                </article>
-
-
-                <article class="info-card">
-
-                    <div class="number">
-                        03
-                    </div>
-
-                    <h3>
-                        Understand
-                    </h3>
-
-                    <p>
-                        Review the measurements and their
-                        limitations in an accessible interface.
-                    </p>
-
-                </article>
-
-            </section>
-
-
-            <section class="notice">
-
-                <strong>
-                    Research prototype
-                </strong>
-
-                <p>
-                    MobilityMind is experimental and has not been
-                    clinically validated. It does not diagnose
-                    medical conditions or predict falls.
-                    Its measurements should not replace a
-                    professional mobility assessment.
-                </p>
-
-            </section>
-
-        </main>
-
-
-        <footer>
-            MobilityMind · Early research prototype
-        </footer>
-
+            <span class="camera-hint">Full body in frame works best</span>
+          </div>
+
+          <div class="camera-stage" id="cameraStage">
+            <video
+              id="cameraVideo"
+              playsinline
+              muted
+              aria-label="Live camera preview"
+            ></video>
+
+            <canvas id="overlayCanvas" aria-hidden="true"></canvas>
+
+            <div class="camera-placeholder" id="cameraPlaceholder">
+              <div class="camera-placeholder-icon" aria-hidden="true">◎</div>
+              <h3>Your camera preview will appear here</h3>
+              <p>
+                Allow camera access when your browser asks. Your video frames
+                are processed locally.
+              </p>
+            </div>
+
+            <div class="camera-stage-badge" id="poseBadge">
+              Waiting for camera
+            </div>
+          </div>
+
+          <div class="camera-controls">
+            <button class="button button-primary" id="startCameraButton" type="button">
+              Start camera
+            </button>
+
+            <button class="button button-secondary" id="startObservationButton" type="button" disabled>
+              Begin observation
+            </button>
+
+            <button class="button button-quiet" id="stopButton" type="button" disabled>
+              Stop
+            </button>
+          </div>
+
+          <p class="inline-message" id="cameraMessage" role="status" aria-live="polite">
+            Camera is off. Start it when you're ready.
+          </p>
+        </div>
+
+        <div class="insight-column">
+          <article class="insight-card main-insight">
+            <div class="insight-header">
+              <span class="card-kicker">OBSERVATION STATUS</span>
+              <span class="pulse-ring" aria-hidden="true"></span>
+            </div>
+
+            <h3 id="eventHeadline">Ready when you are</h3>
+
+            <p id="eventDescription">
+              Start the camera to check pose tracking. This prototype reports
+              visible movement changes, not a fall-risk score.
+            </p>
+
+            <div class="status-meter">
+              <span id="qualityBar"></span>
+            </div>
+
+            <div class="meter-labels">
+              <span>Tracking quality</span>
+              <strong id="qualityLabel">Not measured</strong>
+            </div>
+          </article>
+
+          <article class="insight-card">
+            <div class="card-kicker">LIVE FEATURES</div>
+
+            <div class="feature-row">
+              <span>Torso angle change</span>
+              <strong id="torsoValue">—</strong>
+            </div>
+
+            <div class="feature-row">
+              <span>Hip-center movement</span>
+              <strong id="hipValue">—</strong>
+            </div>
+
+            <div class="feature-row">
+              <span>Pose visibility</span>
+              <strong id="visibilityValue">—</strong>
+            </div>
+
+            <p class="feature-footnote">
+              These are image-derived features. They are affected by camera
+              position, occlusion, and tracking errors.
+            </p>
+          </article>
+
+          <article class="event-card" id="eventCard">
+            <div class="event-icon" aria-hidden="true">i</div>
+            <div>
+              <strong id="eventCardTitle">No observation events yet</strong>
+              <p id="eventCardText">
+                When a rapid detected movement change crosses an experimental
+                threshold, it will appear here for review.
+              </p>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="observation-footer">
+        <div>
+          <span class="footer-label">Observation time</span>
+          <strong id="elapsedTime">00:00</strong>
+        </div>
+
+        <div>
+          <span class="footer-label">Candidate events</span>
+          <strong id="eventCount">0</strong>
+        </div>
+
+        <button class="button button-secondary" id="saveObservationButton" type="button" disabled>
+          Save observation summary
+        </button>
+      </div>
+    </section>
+
+    <section class="section-block" id="screening">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">02 / OPTIONAL SCREENING</p>
+          <h2>Fall-related questions</h2>
+          <p class="section-subtitle">
+            These questions help organize information for a conversation
+            with a healthcare professional. They do not calculate a medical
+            risk score.
+          </p>
+        </div>
+      </div>
+
+      <form class="questionnaire-card" id="screeningForm">
+        <fieldset>
+          <legend>Has the person fallen in the past 12 months?</legend>
+          <label class="radio-option">
+            <input type="radio" name="fallen" value="yes" required>
+            <span>Yes</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="fallen" value="no">
+            <span>No</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="fallen" value="unsure">
+            <span>Not sure</span>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Does the person feel unsteady when standing or walking?</legend>
+          <label class="radio-option">
+            <input type="radio" name="unsteady" value="yes" required>
+            <span>Yes</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="unsteady" value="no">
+            <span>No</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="unsteady" value="unsure">
+            <span>Not sure</span>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Is the person worried about falling?</legend>
+          <label class="radio-option">
+            <input type="radio" name="worried" value="yes" required>
+            <span>Yes</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="worried" value="no">
+            <span>No</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="worried" value="unsure">
+            <span>Not sure</span>
+          </label>
+        </fieldset>
+
+        <div class="form-actions">
+          <button class="button button-primary" type="submit">
+            Save screening responses
+          </button>
+          <span class="form-feedback" id="screeningFeedback" role="status"></span>
+        </div>
+
+        <p class="feature-footnote">
+          Inspired by questions used in the CDC's STEADI fall-prevention
+          resources. This is an educational summary, not a substitute for
+          a clinician's assessment.
+        </p>
+      </form>
+    </section>
+
+    <section class="section-block" id="history">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">03 / YOUR DEVICE</p>
+          <h2>Observation history</h2>
+          <p class="section-subtitle">
+            Summaries are stored in this browser only. They do not include
+            camera frames.
+          </p>
+        </div>
+
+        <button class="button button-quiet" id="clearHistoryButton" type="button">
+          Clear history
+        </button>
+      </div>
+
+      <div class="history-list" id="historyList">
+        <div class="empty-state">
+          <div class="empty-icon" aria-hidden="true">↗</div>
+          <h3>Your saved observations will appear here</h3>
+          <p>Run an observation and save its summary to begin a local history.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-block how-section" id="how-it-works">
+      <p class="eyebrow">04 / HOW IT WORKS</p>
+      <h2>Transparent by design</h2>
+
+      <div class="how-grid">
+        <article>
+          <span>01</span>
+          <h3>Track landmarks</h3>
+          <p>
+            MediaPipe estimates body landmarks from camera frames. It does
+            not understand health status.
+          </p>
+        </article>
+
+        <article>
+          <span>02</span>
+          <h3>Measure changes</h3>
+          <p>
+            Experimental rules look for sudden changes in hip position or
+            torso angle over a short interval.
+          </p>
+        </article>
+
+        <article>
+          <span>03</span>
+          <h3>Review carefully</h3>
+          <p>
+            Any event is a prompt to review the recording context—not a
+            diagnosis or prediction that a fall will occur.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <a class="brand brand-footer" href="#">
+        <span class="brand-mark">m</span>
+        <span>mobility<span class="brand-light">mind</span></span>
+      </a>
+
+      <p>Student research prototype · Not for clinical or emergency use</p>
+
+      <a
+        href="https://www.cdc.gov/steadi/hcp/clinical-resources/index.html"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        CDC STEADI resources ↗
+      </a>
+    </footer>
+  </main>
+
+  <dialog id="demoDialog" class="demo-dialog">
+    <div class="dialog-top">
+      <p class="eyebrow">SAMPLE ONLY</p>
+      <button class="icon-button" id="closeDemoButton" aria-label="Close sample results">
+        ×
+      </button>
     </div>
 
+    <h2>Example observation</h2>
+    <p>This is illustrative sample data, not a real camera analysis.</p>
 
-    <script
-        src="{{ url_for('static', filename='app.js') }}"
-    ></script>
+    <div class="demo-stat-grid">
+      <div>
+        <span>Tracking quality</span>
+        <strong>Good in sample</strong>
+      </div>
+      <div>
+        <span>Candidate events</span>
+        <strong>1 sample event</strong>
+      </div>
+    </div>
 
+    <div class="notice notice-dialog">
+      <strong>Interpretation</strong>
+      <span>
+        A rapid position change can occur for many reasons. This example
+        does not establish fall risk or predict a fall.
+      </span>
+    </div>
+
+    <button class="button button-primary" id="closeDemoButton2" type="button">
+      Got it
+    </button>
+  </dialog>
+
+  <script>
+    window.addEventListener("error", function () {
+      const msg = document.getElementById("cameraMessage");
+
+      if (msg && !msg.textContent.includes("error")) {
+        msg.textContent =
+          "A script failed to load. Check your internet connection and run this page from localhost.";
+      }
+    });
+  </script>
 </body>
 </html>
