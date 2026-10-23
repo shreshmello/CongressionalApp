@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>MobilityMind | Movement Analysis</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='styles.css') }}"
+    >
+</head>
+
+<body>
+
+    <div class="shell">
+
+        <header class="topbar">
+
+            <a class="brand" href="/">
+                <span class="brand-mark">M</span>
+
+                <span>
+                    mobility<span class="brand-light">mind</span>
+                </span>
+            </a>
+
+            <span class="tag">
+                RESEARCH PROTOTYPE
+            </span>
+
+        </header>
+
+
+        <main>
+
+            <section class="hero">
+
+                <div class="eyebrow">
+                    MOVEMENT, MADE MORE UNDERSTANDABLE
+                </div>
+
+                <h1>
+                    Notice movement.<br>
+                    <span>Understand change.</span>
+                </h1>
+
+                <p class="hero-copy">
+                    Analyze movement through computer vision.
+                    Explore movement measurements and identify
+                    changes that may warrant further attention.
+                </p>
+
+            </section>
+
+
+            {% with messages = get_flashed_messages() %}
+
+                {% if messages %}
+
+                    <div class="flash">
+
+                        {% for message in messages %}
+
+                            <p>{{ message }}</p>
+
+                        {% endfor %}
+
+                    </div>
+
+                {% endif %}
+
+            {% endwith %}
+
+
+            <section class="upload-card">
+
+                <div class="card-heading">
+
+                    <div>
+
+                        <div class="eyebrow">
+                            NEW SESSION
+                        </div>
+
+                        <h2>
+                            Analyze a movement clip
+                        </h2>
+
+                    </div>
+
+                    <div class="icon-circle">
+                        ↗
+                    </div>
+
+                </div>
+
+
+                <form
+                    action="{{ url_for('analyze') }}"
+                    method="POST"
+                    enctype="multipart/form-data"
+                    id="upload-form"
+                >
+
+                    <label
+                        class="dropzone"
+                        for="video"
+                    >
+
+                        <span class="upload-icon">
+                            ↑
+                        </span>
+
+                        <strong id="file-label">
+                            Choose a video to upload
+                        </strong>
+
+                        <span>
+                            MP4, MOV, AVI or M4V · Up to 150 MB
+                        </span>
+
+                        <input
+                            type="file"
+                            id="video"
+                            name="video"
+                            accept=".mp4,.mov,.avi,.m4v,video/*"
+                            required
+                        >
+
+                    </label>
+
+
+                    <button
+                        class="button"
+                        type="submit"
+                        id="submit-button"
+                    >
+
+                        Analyze movement
+
+                        <span>→</span>
+
+                    </button>
+
+                </form>
+
+
+                <p class="privacy-note">
+                    <span>●</span>
+                    Uploaded videos are deleted after processing.
+                </p>
+
+            </section>
+
+
+            <section class="how-grid">
+
+                <article class="info-card">
+
+                    <div class="number">
+                        01
+                    </div>
+
+                    <h3>
+                        Detect
+                    </h3>
+
+                    <p>
+                        MediaPipe estimates body landmarks
+                        throughout the video.
+                    </p>
+
+                </article>
+
+
+                <article class="info-card">
+
+                    <div class="number">
+                        02
+                    </div>
+
+                    <h3>
+                        Measure
+                    </h3>
+
+                    <p>
+                        Our analysis code calculates experimental
+                        movement features from those landmarks.
+                    </p>
+
+                </article>
+
+
+                <article class="info-card">
+
+                    <div class="number">
+                        03
+                    </div>
+
+                    <h3>
+                        Understand
+                    </h3>
+
+                    <p>
+                        Review the measurements and their
+                        limitations in an accessible interface.
+                    </p>
+
+                </article>
+
+            </section>
+
+
+            <section class="notice">
+
+                <strong>
+                    Research prototype
+                </strong>
+
+                <p>
+                    MobilityMind is experimental and has not been
+                    clinically validated. It does not diagnose
+                    medical conditions or predict falls.
+                    Its measurements should not replace a
+                    professional mobility assessment.
+                </p>
+
+            </section>
+
+        </main>
+
+
+        <footer>
+            MobilityMind · Early research prototype
+        </footer>
+
+    </div>
+
+
+    <script
+        src="{{ url_for('static', filename='app.js') }}"
+    ></script>
+
+</body>
+</html>
