@@ -1,6 +1,6 @@
+from pathlib import Path
 import argparse
 import json
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -11,10 +11,10 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
-    confusion_matrix,
-    f1_score,
     precision_score,
     recall_score,
+    f1_score,
+    confusion_matrix,
     roc_auc_score,
 )
 from sklearn.model_selection import GroupShuffleSplit
@@ -22,162 +22,104 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Evaluate a classifier using participant-independent testing."
-    )
+def main():
+    parser = argparse.ArgumentParser()
 
     parser.add_argument("--csv", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--group", required=True)
-    parser.add_argument("--positive-label", required=True)
-    parser.add_argument("--output", default="research/results")
+    parser.add_argument("--positive-label", default="1")
     parser.add_argument(
-        "--exclude",
-        nargs="*",
-        default=[],
-        help="Additional columns to exclude from model features.",
+        "--output",
+        default="research/outputs/evaluation.json"
     )
     parser.add_argument("--test-size", type=float, default=0.25)
     parser.add_argument("--seed", type=int, default=42)
 
-    return parser.parse_args()
+    args = parser.parse_args()
 
+    csv_path = Path(args.csv)
 
-def main():
-    args = parse_args()
+    if not csv_path.exists():
+        raise SystemExit(f"CSV not found: {csv_path}")
 
-    if not 0.1 <= args.test_size <= 0.5:
-        raise ValueError("--test-size must be between 0.1 and 0.5.")
+    data = pd.read_csv(csv_path)
 
-    data_path = Path(args.csv).resolve()
-    output_dir = Path(args.output).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    for column in [args.target, args.group]:
+        if column not in data.columns:
+            raise SystemExit(f"Required column missing: {column}")
 
-    df = pd.read_csv(data_path)
+    data = data.dropna(subset=[args.target, args.group]).copy()
 
-    required = {args.target, args.group}
-    missing = required - set(df.columns)
+    labels = data[args.target].astype(str)
+    classes = sorted(labels.unique())
 
-    if missing:
-        raise ValueError(
-            f"Missing required columns: {sorted(missing)}"
+    if len(classes) != 2:
+        raise SystemExit(
+            f"Expected two classes, but found: {classes}"
         )
 
-    df = df.dropna(subset=[args.target, args.group]).copy()
+    positive_label = str(args.positive_label)
 
-    if df.empty:
-        raise ValueError("No rows remain after removing missing labels/groups.")
-
-    # This script supports binary classification only.
-    labels = list(pd.unique(df[args.target]))
-
-    if len(labels) != 2:
-        raise ValueError(
-            f"Expected exactly 2 target classes, found {labels}. "
-            "Check your labels and target definition."
+    if positive_label not in classes:
+        raise SystemExit(
+            f"Positive label {positive_label} not found in {classes}"
         )
 
-    if args.positive_label not in [str(v) for v in labels]:
-        raise ValueError(
-            f"Positive label {args.positive_label!r} not found in "
-            f"target values {labels}."
-        )
-
-    # Explicitly convert the target to a binary outcome.
-    y = (
-        df[args.target].astype(str) == args.positive_label
-    ).astype(int)
-
-    if y.nunique() != 2:
-        raise ValueError("Both positive and negative classes are required.")
+    y = (labels == positive_label).astype(int).to_numpy()
+    groups = data[args.group].astype(str).to_numpy()
 
     excluded = {
         args.target,
         args.group,
-        *args.exclude,
+        "video_path",
+        "record_path",
     }
 
-    feature_cols = [
-        c for c in df.columns
-        if c not in excluded
+    feature_data = data[
+        [column for column in data.columns if column not in excluded]
+    ].copy()
+
+    feature_data = feature_data.dropna(axis=1, how="all")
+
+    feature_data = feature_data.loc[
+        :,
+        [
+            column
+            for column in feature_data.columns
+            if feature_data[column].nunique(dropna=True) > 1
+        ],
     ]
 
-    if not feature_cols:
-        raise ValueError("No feature columns remain.")
+    if feature_data.empty:
+        raise SystemExit("No usable feature columns were found.")
 
-    X = df[feature_cols].copy()
-
-    # Drop columns that are entirely missing.
-    X = X.dropna(axis=1, how="all")
-    feature_cols = list(X.columns)
-
-    if X.empty or not feature_cols:
-        raise ValueError("No usable features were found.")
-
-    # Reject columns that could leak the answer directly.
-    # Inspect all remaining features manually as well.
-    print("Features used:", feature_cols)
-    print("Target:", args.target)
-    print("Group column:", args.group)
-
-    # Participant-level split: a person must not appear in both sets.
-    splitter = GroupShuffleSplit(
-        n_splits=1,
-        test_size=args.test_size,
-        random_state=args.seed,
-    )
-
-    train_idx, test_idx = next(
-        splitter.split(X, y, groups=df[args.group])
-    )
-
-    X_train = X.iloc[train_idx]
-    X_test = X.iloc[test_idx]
-    y_train = y.iloc[train_idx]
-    y_test = y.iloc[test_idx]
-
-    train_groups = set(df[args.group].iloc[train_idx])
-    test_groups = set(df[args.group].iloc[test_idx])
-
-    if train_groups & test_groups:
-        raise RuntimeError("Participant leakage detected!")
-
-    if y_train.nunique() < 2 or y_test.nunique() < 2:
-        raise ValueError(
-            "The participant split does not contain both classes in "
-            "training and testing. A valid evaluation cannot be calculated "
-            "from this split. Review class distribution and participants."
-        )
-
-    numeric_cols = X_train.select_dtypes(
-        include=["number", "bool"]
+    categorical = feature_data.select_dtypes(
+        include=["object", "category", "bool"]
     ).columns.tolist()
 
-    categorical_cols = [
-        c for c in feature_cols
-        if c not in numeric_cols
+    numeric = [
+        column for column in feature_data.columns
+        if column not in categorical
     ]
-
-    numeric_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-    ])
-
-    categorical_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("onehot", OneHotEncoder(handle_unknown="ignore")),
-    ])
 
     transformers = []
 
-    if numeric_cols:
+    if numeric:
         transformers.append(
-            ("numeric", numeric_pipeline, numeric_cols)
+            ("numeric", SimpleImputer(strategy="median"), numeric)
         )
 
-    if categorical_cols:
+    if categorical:
         transformers.append(
-            ("categorical", categorical_pipeline, categorical_cols)
+            (
+                "categorical",
+                Pipeline([
+                    ("imputer", SimpleImputer(strategy="most_frequent")),
+                    ("encoder", OneHotEncoder(handle_unknown="ignore")),
+                ]),
+                categorical,
+            )
         )
 
     preprocessing = ColumnTransformer(transformers)
@@ -195,6 +137,45 @@ def main():
         ),
     ])
 
+    if len(np.unique(groups)) < 4:
+        raise SystemExit(
+            "At least four unique participant groups are required "
+            "for this baseline grouped holdout."
+        )
+
+    splitter = GroupShuffleSplit(
+        n_splits=100,
+        test_size=args.test_size,
+        random_state=args.seed,
+    )
+
+    split_found = None
+
+    for train_indices, test_indices in splitter.split(
+        feature_data, y, groups
+    ):
+        if (
+            len(np.unique(y[train_indices])) == 2
+            and len(np.unique(y[test_indices])) == 2
+        ):
+            split_found = (train_indices, test_indices)
+            break
+
+    if split_found is None:
+        raise SystemExit(
+            "Could not find a participant-grouped split containing "
+            "both classes in training and testing. Check your labels "
+            "and how they are distributed across participants."
+        )
+
+    train_indices, test_indices = split_found
+
+    X_train = feature_data.iloc[train_indices]
+    X_test = feature_data.iloc[test_indices]
+
+    y_train = y[train_indices]
+    y_test = y[test_indices]
+
     model.fit(X_train, y_train)
 
     predictions = model.predict(X_test)
@@ -206,81 +187,60 @@ def main():
         labels=[0, 1],
     ).ravel()
 
-    specificity = (
-        tn / (tn + fp) if (tn + fp) else None
-    )
+    specificity = tn / (tn + fp) if tn + fp else None
 
-    metrics = {
-        "experiment": data_path.stem,
-        "dataset_file": str(data_path),
-        "target_column": args.target,
+    try:
+        auc = float(roc_auc_score(y_test, probabilities))
+    except ValueError:
+        auc = None
+
+    results = {
+        "task": "Binary classification of the supplied labels",
+        "target": args.target,
+        "positive_label": positive_label,
         "group_column": args.group,
-        "positive_label": args.positive_label,
-        "features": feature_cols,
-        "rows_total": int(len(df)),
-        "rows_train": int(len(train_idx)),
-        "rows_test": int(len(test_idx)),
-        "unique_train_participants": int(len(train_groups)),
-        "unique_test_participants": int(len(test_groups)),
-        "train_test_participant_overlap": len(
-            train_groups & test_groups
+        "total_rows": len(data),
+        "total_participants": len(np.unique(groups)),
+        "training_rows": len(train_indices),
+        "testing_rows": len(test_indices),
+        "training_participants": sorted(
+            np.unique(groups[train_indices]).tolist()
         ),
-        "accuracy": float(accuracy_score(y_test, predictions)),
-        "balanced_accuracy": float(
-            balanced_accuracy_score(y_test, predictions)
+        "testing_participants": sorted(
+            np.unique(groups[test_indices]).tolist()
         ),
-        "precision": float(
-            precision_score(y_test, predictions, zero_division=0)
-        ),
-        "sensitivity_recall": float(
-            recall_score(y_test, predictions, zero_division=0)
-        ),
-        "specificity": (
-            float(specificity) if specificity is not None else None
-        ),
-        "f1": float(
-            f1_score(y_test, predictions, zero_division=0)
-        ),
-        "roc_auc": float(
-            roc_auc_score(y_test, probabilities)
-        ),
-        "true_negatives": int(tn),
-        "false_positives": int(fp),
-        "false_negatives": int(fn),
-        "true_positives": int(tp),
-        "test_class_counts": {
-            "negative": int((y_test == 0).sum()),
-            "positive": int((y_test == 1).sum()),
+        "features": feature_data.columns.tolist(),
+        "metrics": {
+            "accuracy": float(accuracy_score(y_test, predictions)),
+            "balanced_accuracy": float(
+                balanced_accuracy_score(y_test, predictions)
+            ),
+            "precision": float(
+                precision_score(y_test, predictions, zero_division=0)
+            ),
+            "sensitivity_recall": float(
+                recall_score(y_test, predictions, zero_division=0)
+            ),
+            "specificity": float(specificity) if specificity is not None else None,
+            "f1": float(f1_score(y_test, predictions, zero_division=0)),
+            "roc_auc": auc,
+            "true_negatives": int(tn),
+            "false_positives": int(fp),
+            "false_negatives": int(fn),
+            "true_positives": int(tp),
         },
-        "interpretation_warning": (
-            "Metrics describe this test split only. They do not establish "
-            "clinical validity or future-fall prediction."
+        "warning": (
+            "This is a baseline grouped holdout, not clinical validation. "
+            "Historical fall status does not mean future-fall prediction."
         ),
     }
 
-    predictions_out = df.iloc[test_idx][
-        [args.group, args.target]
-    ].copy()
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    predictions_out["actual_binary"] = y_test.to_numpy()
-    predictions_out["predicted_binary"] = predictions
-    predictions_out["predicted_probability"] = probabilities
-
-    predictions_out.to_csv(
-        output_dir / f"{data_path.stem}_test_predictions.csv",
-        index=False,
-    )
-
-    with open(
-        output_dir / f"{data_path.stem}_metrics.json",
-        "w",
-        encoding="utf-8",
-    ) as f:
-        json.dump(metrics, f, indent=2)
-
-    print("\nEVALUATION RESULTS")
-    print(json.dumps(metrics, indent=2))
-    print(f"\nSaved results to: {output_dir}")
+    print(json.dumps(results, indent=2))
+    print(f"\nResults saved to {output.resolve()}")
 
 
 if __name__ == "__main__":
