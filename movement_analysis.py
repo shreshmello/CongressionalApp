@@ -4,6 +4,7 @@ import math
 import cv2
 import numpy as np
 import mediapipe as mp
+from scipy.signal import find_peaks
 
 
 # MediaPipe Pose landmark indices.
@@ -16,6 +17,9 @@ RIGHT_HIP = 24
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
+LEFT_KNEE = 25
+RIGHT_KNEE = 26
+
 REQUIRED_LANDMARKS = [
     LEFT_SHOULDER,
     RIGHT_SHOULDER,
@@ -23,6 +27,8 @@ REQUIRED_LANDMARKS = [
     RIGHT_HIP,
     LEFT_ANKLE,
     RIGHT_ANKLE,
+    LEFT_KNEE,
+    RIGHT_KNEE,
 ]
 
 
@@ -72,6 +78,83 @@ def calculate_motion_similarity(left_values, right_values):
     return round(float(similarity), 1)
 
 
+def knee_angle_range(hx, hy, kx, ky, ax, ay, aspect):
+    """
+    Knee bending range (10th-90th percentile) in degrees,
+    using the angle at the knee between hip and ankle.
+    """
+
+    # Landmark x and y are normalized by width and height separately,
+    # so scale x by width/height to measure angles in real pixel space.
+    hip = np.column_stack([np.asarray(hx) * aspect, hy])
+    knee = np.column_stack([np.asarray(kx) * aspect, ky])
+    ankle = np.column_stack([np.asarray(ax) * aspect, ay])
+
+    u = hip - knee
+    v = ankle - knee
+
+    cos = np.sum(u * v, axis=1) / (
+        np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1) + 1e-9
+    )
+
+    angles = np.degrees(np.arccos(np.clip(cos, -1, 1)))
+
+    return percentile_range(angles)
+
+
+def step_times(ankle_x, hip_x, times, fps):
+    """
+    Times (seconds) when this foot is furthest forward
+    relative to the hips. Assumes a side-view walking clip.
+    """
+
+    if len(ankle_x) < 5:
+        return np.array([])
+
+    d = np.array(ankle_x) - np.array(hip_x)
+
+    # Walking right-to-left: flip so "forward" is positive.
+    if hip_x[-1] < hip_x[0]:
+        d = -d
+
+    # Smooth frame-to-frame jitter.
+    d = np.convolve(d, np.ones(5) / 5, mode="same")
+
+    peaks, _ = find_peaks(d, distance=max(1, int(fps * 0.4)))
+
+    # Use real frame times, since low-visibility frames are skipped.
+    return np.asarray(times)[peaks]
+
+
+def step_stats(left_times, right_times):
+    """
+    Cadence and left/right step-time asymmetry from
+    alternating left and right step events.
+    """
+
+    events = sorted(
+        [(t, "L") for t in left_times]
+        + [(t, "R") for t in right_times]
+    )
+
+    left, right = [], []
+
+    for (t1, s1), (t2, s2) in zip(events, events[1:]):
+        if s1 != s2:
+            (left if s2 == "L" else right).append(t2 - t1)
+
+    if len(left) < 2 or len(right) < 2:
+        return None
+
+    steps = left + right
+    l, r = np.mean(left), np.mean(right)
+
+    return {
+        "cadence": float(60 / np.mean(steps)),
+        "asymmetry": float(2 * abs(l - r) / (l + r) * 100),
+    }
+
+
 def analyze_video(video_path: Path, model_path: Path) -> dict:
     """
     Analyze a video using MediaPipe Pose Landmarker.
@@ -112,6 +195,15 @@ def analyze_video(video_path: Path, model_path: Path) -> dict:
     left_ankle_x = []
     right_ankle_x = []
 
+    left_ankle_y, right_ankle_y = [], []
+    left_hip_x, left_hip_y = [], []
+    right_hip_x, right_hip_y = [], []
+    left_knee_x, left_knee_y = [], []
+    right_knee_x, right_knee_y = [], []
+
+    sample_times = []
+    aspect = 1.0
+
     visibility_values = []
 
     frames_seen = 0
@@ -140,6 +232,9 @@ def analyze_video(video_path: Path, model_path: Path) -> dict:
                     break
 
                 frames_seen += 1
+
+                frame_height, frame_width = frame.shape[:2]
+                aspect = frame_width / frame_height
 
                 rgb_frame = cv2.cvtColor(
                     frame,
@@ -194,6 +289,9 @@ def analyze_video(video_path: Path, model_path: Path) -> dict:
                 left_ankle = landmarks[LEFT_ANKLE]
                 right_ankle = landmarks[RIGHT_ANKLE]
 
+                left_knee = landmarks[LEFT_KNEE]
+                right_knee = landmarks[RIGHT_KNEE]
+
                 # Midpoint between the hips.
                 hip_mid_x.append(
                     (left_hip.x + right_hip.x) / 2
@@ -218,6 +316,20 @@ def analyze_video(video_path: Path, model_path: Path) -> dict:
                 right_ankle_x.append(
                     right_ankle.x
                 )
+
+                sample_times.append((frames_seen - 1) / fps)
+
+                # Per-side positions for knee angles.
+                left_ankle_y.append(left_ankle.y)
+                right_ankle_y.append(right_ankle.y)
+                left_hip_x.append(left_hip.x)
+                left_hip_y.append(left_hip.y)
+                right_hip_x.append(right_hip.x)
+                right_hip_y.append(right_hip.y)
+                left_knee_x.append(left_knee.x)
+                left_knee_y.append(left_knee.y)
+                right_knee_x.append(right_knee.x)
+                right_knee_y.append(right_knee.y)
 
     finally:
         cap.release()
@@ -275,6 +387,25 @@ def analyze_video(video_path: Path, model_path: Path) -> dict:
         right_ankle_x,
     )
 
+    left_knee_rom = knee_angle_range(
+        left_hip_x, left_hip_y,
+        left_knee_x, left_knee_y,
+        left_ankle_x, left_ankle_y,
+        aspect,
+    )
+
+    right_knee_rom = knee_angle_range(
+        right_hip_x, right_hip_y,
+        right_knee_x, right_knee_y,
+        right_ankle_x, right_ankle_y,
+        aspect,
+    )
+
+    steps = step_stats(
+        step_times(left_ankle_x, hip_mid_x, sample_times, fps),
+        step_times(right_ankle_x, hip_mid_x, sample_times, fps),
+    )
+
     metrics = [
         {
             "name": "Hip-center horizontal movement",
@@ -327,6 +458,40 @@ def analyze_video(video_path: Path, model_path: Path) -> dict:
                 "Similarity of horizontal ankle-motion "
                 "ranges. This is an exploratory feature, "
                 "not a validated gait-symmetry score."
+            ),
+        },
+        {
+            "name": "Knee bending range (left / right)",
+            "value": (
+                f"{left_knee_rom:.0f}° / {right_knee_rom:.0f}°"
+                if left_knee_rom is not None
+                and right_knee_rom is not None
+                else "Unavailable"
+            ),
+            "description": (
+                "How much each knee bends while walking, "
+                "from 2D image angles. Best from a side view."
+            ),
+        },
+        {
+            "name": "Cadence",
+            "value": (
+                f"{steps['cadence']:.0f} steps/min"
+                if steps
+                else "Unavailable"
+            ),
+            "description": "Estimated steps per minute.",
+        },
+        {
+            "name": "Step-time asymmetry",
+            "value": (
+                f"{steps['asymmetry']:.1f}%"
+                if steps
+                else "Unavailable"
+            ),
+            "description": (
+                "Difference between left and right step "
+                "times. 0% means perfectly even."
             ),
         },
     ]

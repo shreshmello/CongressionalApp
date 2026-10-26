@@ -81,6 +81,8 @@ def extract_video_features(video_path, sample_every=2, max_frames=1800):
                 landmarks.RIGHT_SHOULDER.value,
                 landmarks.LEFT_HIP.value,
                 landmarks.RIGHT_HIP.value,
+                landmarks.LEFT_KNEE.value,
+                landmarks.RIGHT_KNEE.value,
             ]
 
             selected = [points[index] for index in required]

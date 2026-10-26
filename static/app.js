@@ -19,6 +19,11 @@ const state = {
 
   lastVideoTime: -1,
   startAt: 0,
+  endAt: 0,
+
+  timeline: [],
+  lastTimelineAt: 0,
+  summary: null,
 
   samples: [],
   events: [],
@@ -69,6 +74,24 @@ function angleDegrees(hip, shoulder) {
   const dy = shoulder.y - hip.y;
 
   return Math.atan2(dx, -dy) * 180 / Math.PI;
+}
+
+function kneeAngle(hip, knee, ankle) {
+  // Angle at the knee between hip and ankle; 180° is a straight leg.
+  // Landmarks are normalized per axis, so scale x by the frame's aspect ratio.
+  const aspect = video.videoWidth && video.videoHeight
+    ? video.videoWidth / video.videoHeight
+    : 1;
+
+  const ux = (hip.x - knee.x) * aspect;
+  const uy = hip.y - knee.y;
+  const vx = (ankle.x - knee.x) * aspect;
+  const vy = ankle.y - knee.y;
+
+  const cos = (ux * vx + uy * vy) /
+    (Math.hypot(ux, uy) * Math.hypot(vx, vy) + 1e-9);
+
+  return Math.acos(Math.min(1, Math.max(-1, cos))) * 180 / Math.PI;
 }
 
 function meanVisibility(landmarks, indices) {
@@ -164,11 +187,21 @@ function extractFeatures(landmarks, now) {
   const leftHip = landmarks[23];
   const rightHip = landmarks[24];
 
+  const leftKnee = landmarks[25];
+  const rightKnee = landmarks[26];
+
+  const leftAnkle = landmarks[27];
+  const rightAnkle = landmarks[28];
+
   if (
     !leftShoulder ||
     !rightShoulder ||
     !leftHip ||
-    !rightHip
+    !rightHip ||
+    !rightKnee ||
+    !leftKnee ||
+    !leftAnkle ||
+    !rightAnkle
   ) {
     return null;
   }
@@ -190,7 +223,9 @@ function extractFeatures(landmarks, now) {
     visibility,
     hipX: hip.x,
     hipY: hip.y,
-    torsoAngle
+    torsoAngle,
+    leftKneeAngle: kneeAngle(leftHip, leftKnee, leftAnkle),
+    rightKneeAngle: kneeAngle(rightHip, rightKnee, rightAnkle)
   };
 }
 
@@ -268,22 +303,28 @@ function classifyMovement(features) {
     state.lastEventAt = features.time;
 
     let explanation;
+    let short;
 
     if (rapidPositionChange && rapidTorsoChange) {
       explanation =
         "A rapid hip-center shift and torso-angle change were detected.";
+      short = "sudden hip shift and upper-body lean";
     } else if (rapidPositionChange) {
       explanation =
         "A rapid change in detected hip-center position was observed.";
+      short = "sudden shift of the hips";
     } else {
       explanation =
         "A rapid change in detected torso angle was observed.";
+      short = "sudden lean of the upper body";
     }
 
     state.events.push({
       at: new Date().toISOString(),
+      seconds: (features.time - state.startAt) / 1000,
       label: "Candidate movement change",
-      detail: explanation
+      detail: explanation,
+      short
     });
 
     $("eventCount").textContent = String(state.events.length);
@@ -435,6 +476,22 @@ function renderLoop() {
 
           state.samples.push(features);
 
+          // Keep a lighter whole-observation record (5 per second) for the summary.
+          if (
+            state.observing &&
+            features.visibility >= 0.55 &&
+            now - state.lastTimelineAt >= 200
+          ) {
+            state.lastTimelineAt = now;
+
+            state.timeline.push({
+              t: (now - state.startAt) / 1000,
+              left: features.leftKneeAngle,
+              right: features.rightKneeAngle,
+              lean: Math.abs(features.torsoAngle)
+            });
+          }
+
           // Retain only a short recent window in memory.
           state.samples = state.samples.filter(
             (sample) => now - sample.time < 2500
@@ -450,6 +507,9 @@ function renderLoop() {
 
           $("hipValue").textContent =
             `${Math.hypot(features.hipX, features.hipY).toFixed(3)} image units`;
+
+          $("kneeValue").textContent =
+            `${Math.round(features.leftKneeAngle)}° / ${Math.round(features.rightKneeAngle)}°`;
 
           $("visibilityValue").textContent =
             `${Math.round(features.visibility * 100)}%`;
@@ -522,6 +582,12 @@ function beginObservation() {
   state.events = [];
   state.lastEventAt = 0;
 
+  state.endAt = 0;
+  state.timeline = [];
+  state.lastTimelineAt = 0;
+  state.summary = null;
+  renderSummary();
+
   state.totalFrames = 0;
   state.goodFrames = 0;
 
@@ -546,6 +612,10 @@ function beginObservation() {
 
 function stopEverything() {
   const wasObserving = state.observing;
+
+  if (wasObserving) {
+    state.endAt = performance.now();
+  }
 
   state.observing = false;
   state.running = false;
@@ -585,12 +655,24 @@ function stopEverything() {
     "Camera stopped. Camera frames are not saved by this prototype."
   );
 
+  if (wasObserving) {
+    state.summary = buildSummary();
+    renderSummary();
+    $("summaryPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   $("poseBadge").textContent = "Waiting for camera";
 }
 
 function saveObservation() {
+  // Saving mid-observation summarizes everything up to now.
+  if (state.observing || !state.summary) {
+    state.summary = buildSummary();
+    renderSummary();
+  }
+
   const duration = state.startAt
-    ? Math.max(0, performance.now() - state.startAt)
+    ? Math.max(0, (state.endAt || performance.now()) - state.startAt)
     : 0;
 
   const quality = state.totalFrames
@@ -609,6 +691,8 @@ function saveObservation() {
     candidateEvents: state.events.length,
 
     usableFrameRatio: Math.round(quality * 100),
+
+    summary: state.summary,
 
     eventSummaries: state.events.map((event) => ({
       at: event.at,
@@ -634,6 +718,597 @@ function saveObservation() {
   setMessage(
     "Observation summary saved locally in this browser. No camera frames were saved."
   );
+}
+
+const SUMMARY_LEVELS = {
+  none: {
+    label: "No warning signs seen",
+    icon: "✓",
+    text: "The camera didn't pick up any sudden movements or unusual posture during this observation."
+  },
+  some: {
+    label: "Some warning signs",
+    icon: "!",
+    text: "A few things stood out. They often happen during normal activity, but they're worth keeping an eye on."
+  },
+  several: {
+    label: "Several warning signs",
+    icon: "!!",
+    text: "Several things stood out. Consider repeating the observation and talking with a doctor or physical therapist about balance and mobility."
+  },
+  unclear: {
+    label: "Not enough data",
+    icon: "?",
+    text: "The camera couldn't see the body clearly for long enough. Try again with the full body in view for at least 10 seconds."
+  }
+};
+
+function percentile(values, p) {
+  if (!values.length) {
+    return null;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.round((p / 100) * (sorted.length - 1)))
+  );
+
+  return sorted[index];
+}
+
+function smoothedExtremes(values) {
+  // A 1-second rolling median drops single-frame tracking glitches
+  // but keeps real movements that last a second or more.
+  const smoothed = values.map((_, index) =>
+    percentile(values.slice(Math.max(0, index - 2), index + 3), 50)
+  );
+
+  return {
+    min: Math.min(...smoothed),
+    max: Math.max(...smoothed)
+  };
+}
+
+function formatClock(seconds) {
+  const whole = Math.max(0, Math.round(seconds));
+
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function formatDuration(seconds) {
+  const whole = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(whole / 60);
+
+  return minutes
+    ? `${minutes} min ${whole % 60} s`
+    : `${whole} s`;
+}
+
+function buildSummary() {
+  const end = state.endAt || performance.now();
+  const durationSeconds = state.startAt
+    ? Math.max(0, (end - state.startAt) / 1000)
+    : 0;
+
+  const quality = state.totalFrames
+    ? state.goodFrames / state.totalFrames
+    : 0;
+
+  const points = state.timeline;
+
+  const left = points.map((point) => point.left);
+  const right = points.map((point) => point.right);
+  const lean = points.map((point) => point.lean);
+
+  const leftKnee = smoothedExtremes(left);
+  const rightKnee = smoothedExtremes(right);
+
+  const knees = points.length
+    ? {
+      leftMin: leftKnee.min,
+      leftMax: leftKnee.max,
+      rightMin: rightKnee.min,
+      rightMax: rightKnee.max
+    }
+    : null;
+
+  const typicalLean = percentile(lean, 50);
+  const maxLean = points.length ? smoothedExtremes(lean).max : null;
+
+  const signs = [];
+
+  if (state.events.length) {
+    signs.push(
+      `${state.events.length} sudden movement${state.events.length === 1 ? "" : "s"} flagged`
+    );
+  }
+
+  /*
+   * These thresholds are experimental placeholders, like the ones in
+   * classifyMovement. They are not clinically derived.
+   */
+  if (maxLean !== null && maxLean > 20) {
+    signs.push(`Upper body leaned far from upright (up to ${Math.round(maxLean)}°)`);
+  }
+
+  if (knees) {
+    const leftRange = knees.leftMax - knees.leftMin;
+    const rightRange = knees.rightMax - knees.rightMin;
+
+    if (
+      Math.max(leftRange, rightRange) > 20 &&
+      Math.abs(leftRange - rightRange) > 15
+    ) {
+      signs.push(
+        `Knees moved unevenly (left bent through ${Math.round(leftRange)}°, right through ${Math.round(rightRange)}°)`
+      );
+    }
+  }
+
+  // Each flagged event counts as its own sign.
+  const signCount = state.events.length + signs.length - (state.events.length ? 1 : 0);
+
+  let level;
+
+  if (durationSeconds < 10 || quality < 0.5 || points.length < 10) {
+    level = "unclear";
+  } else if (signCount === 0) {
+    level = "none";
+  } else if (signCount <= 2) {
+    level = "some";
+  } else {
+    level = "several";
+  }
+
+  return {
+    level,
+    durationSeconds: Math.round(durationSeconds),
+    quality: Math.round(quality * 100),
+    signs,
+    events: state.events.map((event) => ({
+      seconds: event.seconds,
+      short: event.short
+    })),
+    knees: knees && {
+      leftMin: Math.round(knees.leftMin),
+      leftMax: Math.round(knees.leftMax),
+      rightMin: Math.round(knees.rightMin),
+      rightMax: Math.round(knees.rightMax)
+    },
+    typicalLean: typicalLean === null ? null : Math.round(typicalLean),
+    maxLean: maxLean === null ? null : Math.round(maxLean)
+  };
+}
+
+function qualityText(quality) {
+  const word = quality >= 75 ? "Good" : quality >= 55 ? "Fair" : "Poor";
+
+  return `${word}: the full body was clearly visible ${quality}% of the time`;
+}
+
+function summaryFacts(summary) {
+  const facts = [
+    ["Length", formatDuration(summary.durationSeconds)],
+    ["Tracking quality", qualityText(summary.quality)]
+  ];
+
+  facts.push([
+    "Sudden movements",
+    summary.events.length
+      ? summary.events
+        .map((event) => `at ${formatClock(event.seconds)}: ${event.short}`)
+        .join("\n")
+      : "None flagged"
+  ]);
+
+  if (summary.knees) {
+    facts.push([
+      "Knees",
+      `Left moved between ${summary.knees.leftMin}° and ${summary.knees.leftMax}°, ` +
+      `right between ${summary.knees.rightMin}° and ${summary.knees.rightMax}° ` +
+      "(180° is a straight leg)"
+    ]);
+  }
+
+  if (summary.maxLean !== null) {
+    facts.push([
+      "Upper body",
+      summary.maxLean <= 10
+        ? `Stayed upright (leaned ${summary.maxLean}° at most)`
+        : `Usually leaned about ${summary.typicalLean}°, up to ${summary.maxLean}° at most (0° is straight up)`
+    ]);
+  }
+
+  return facts;
+}
+
+function levelBadge(level) {
+  const info = SUMMARY_LEVELS[level] || SUMMARY_LEVELS.unclear;
+
+  return `
+    <span class="level-badge level-${escapeHtml(level)}">
+      <span class="level-icon" aria-hidden="true">${info.icon}</span>
+      ${escapeHtml(info.label)}
+    </span>
+  `;
+}
+
+function renderSummary() {
+  const panel = $("summaryPanel");
+  const summary = state.summary;
+
+  if (!summary) {
+    panel.hidden = true;
+    return;
+  }
+
+  const info = SUMMARY_LEVELS[summary.level];
+
+  const facts = summaryFacts(summary)
+    .map(([name, value]) => `
+      <div class="summary-fact">
+        <dt>${escapeHtml(name)}</dt>
+        <dd>${escapeHtml(value).replace(/\n/g, "<br>")}</dd>
+      </div>
+    `)
+    .join("");
+
+  const signs = summary.signs.length
+    ? `
+      <h4>What stood out</h4>
+      <ul class="summary-signs">
+        ${summary.signs.map((sign) => `<li>${escapeHtml(sign)}</li>`).join("")}
+      </ul>
+    `
+    : "";
+
+  const hasChart = state.timeline.length >= 2;
+
+  panel.innerHTML = `
+    <div class="summary-head">
+      <span class="card-kicker">OBSERVATION SUMMARY</span>
+      ${levelBadge(summary.level)}
+      <p class="summary-lead">${escapeHtml(info.text)}</p>
+    </div>
+
+    ${signs}
+
+    <h4>What we measured</h4>
+    <dl class="summary-facts">${facts}</dl>
+
+    ${hasChart ? `
+      <h4>Over time</h4>
+      <div class="summary-charts">
+        <div class="time-chart" id="kneeChart"></div>
+        <div class="time-chart" id="leanChart"></div>
+      </div>
+      <details class="summary-table">
+        <summary>Show as table</summary>
+        <div class="table-scroll">${timelineTable()}</div>
+      </details>
+    ` : ""}
+
+    <p class="feature-footnote">
+      These are camera-based observations, not a medical diagnosis or a
+      fall prediction. Talk to a healthcare professional about any concerns.
+    </p>
+  `;
+
+  panel.hidden = false;
+
+  if (hasChart) {
+    drawSummaryCharts();
+  }
+}
+
+function drawSummaryCharts() {
+  const duration = state.summary.durationSeconds || 1;
+  const events = state.summary.events;
+
+  const kneeValues = state.timeline.flatMap((point) => [point.left, point.right]);
+
+  drawTimeChart($("kneeChart"), {
+    title: "Knee angle (180° = straight leg)",
+    series: [
+      { key: "left", name: "Left knee", color: "#2a78d6" },
+      { key: "right", name: "Right knee", color: "#eb6834" }
+    ],
+    yMin: Math.max(0, Math.floor((Math.min(...kneeValues) - 5) / 10) * 10),
+    yMax: 180,
+    unit: "°",
+    duration,
+    events
+  });
+
+  const leanValues = state.timeline.map((point) => point.lean);
+
+  drawTimeChart($("leanChart"), {
+    title: "Upper-body lean (0° = straight up)",
+    series: [
+      { key: "lean", name: "Lean", color: "#426f5d" }
+    ],
+    yMin: 0,
+    yMax: Math.max(30, Math.ceil((Math.max(...leanValues) + 5) / 10) * 10),
+    unit: "°",
+    duration,
+    events
+  });
+}
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+
+  Object.entries(attrs).forEach(([name, value]) => {
+    el.setAttribute(name, value);
+  });
+
+  return el;
+}
+
+function drawTimeChart(container, options) {
+  const points = state.timeline;
+
+  container.innerHTML = "";
+
+  const heading = document.createElement("div");
+  heading.className = "chart-heading";
+
+  const title = document.createElement("strong");
+  title.textContent = options.title;
+  heading.append(title);
+
+  // Legend only when there's more than one line to tell apart.
+  if (options.series.length > 1) {
+    const legend = document.createElement("div");
+    legend.className = "chart-legend";
+
+    options.series.forEach((series) => {
+      const item = document.createElement("span");
+      const key = document.createElement("i");
+      key.style.background = series.color;
+      item.append(key, document.createTextNode(series.name));
+      legend.append(item);
+    });
+
+    heading.append(legend);
+  }
+
+  container.append(heading);
+
+  const width = Math.max(280, container.clientWidth || 600);
+  const height = 170;
+  const margin = { top: 14, right: 16, bottom: 26, left: 40 };
+  const plotW = width - margin.left - margin.right;
+  const plotH = height - margin.top - margin.bottom;
+
+  const x = (seconds) => margin.left + (seconds / options.duration) * plotW;
+  const y = (value) => margin.top +
+    (1 - (value - options.yMin) / (options.yMax - options.yMin)) * plotH;
+
+  const svg = svgEl("svg", {
+    width,
+    height,
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+    "aria-label": `${options.title} over the observation`
+  });
+
+  // Gridlines and y-axis labels on round numbers.
+  const tickStep = [5, 10, 20, 30, 45].find(
+    (candidate) => (options.yMax - options.yMin) / candidate <= 5
+  ) || 60;
+
+  for (let value = options.yMin; value <= options.yMax; value += tickStep) {
+    const yPos = y(value);
+
+    svg.append(svgEl("line", {
+      x1: margin.left, x2: width - margin.right,
+      y1: yPos, y2: yPos,
+      class: value === options.yMin ? "chart-axis" : "chart-grid"
+    }));
+
+    const label = svgEl("text", {
+      x: margin.left - 6, y: yPos + 4,
+      "text-anchor": "end",
+      class: "chart-tick"
+    });
+    label.textContent = `${Math.round(value)}${options.unit}`;
+    svg.append(label);
+  }
+
+  // X-axis time labels.
+  // Leave at least ~50px between time labels.
+  const step = [5, 10, 15, 30, 60, 120, 300].find(
+    (candidate) => (plotW / options.duration) * candidate >= 50
+  ) || 600;
+
+  for (let seconds = 0; seconds <= options.duration; seconds += step) {
+    const label = svgEl("text", {
+      x: x(seconds), y: height - 6,
+      "text-anchor": seconds === 0 ? "start" : "middle",
+      class: "chart-tick"
+    });
+    label.textContent = formatClock(seconds);
+    svg.append(label);
+  }
+
+  // Flagged sudden movements as dashed markers.
+  options.events.forEach((event) => {
+    svg.append(svgEl("line", {
+      x1: x(event.seconds), x2: x(event.seconds),
+      y1: margin.top, y2: margin.top + plotH,
+      class: "chart-event"
+    }));
+
+    const flag = svgEl("text", {
+      x: x(event.seconds) + 4, y: margin.top + 10,
+      class: "chart-event-label"
+    });
+    flag.textContent = "!";
+    svg.append(flag);
+  });
+
+  // Lines break where tracking dropped out for more than a second.
+  options.series.forEach((series) => {
+    let d = "";
+    let previous = null;
+
+    points.forEach((point) => {
+      const command = !previous || point.t - previous.t > 1 ? "M" : "L";
+      d += `${command}${x(point.t).toFixed(1)},${y(point[series.key]).toFixed(1)}`;
+      previous = point;
+    });
+
+    svg.append(svgEl("path", {
+      d,
+      fill: "none",
+      stroke: series.color,
+      "stroke-width": 2,
+      "stroke-linejoin": "round",
+      "stroke-linecap": "round"
+    }));
+  });
+
+  // Hover crosshair and tooltip.
+  const crosshair = svgEl("line", {
+    y1: margin.top, y2: margin.top + plotH,
+    class: "chart-crosshair",
+    visibility: "hidden"
+  });
+  svg.append(crosshair);
+
+  const dots = options.series.map((series) => {
+    const dot = svgEl("circle", {
+      r: 4,
+      fill: series.color,
+      stroke: "#fff",
+      "stroke-width": 2,
+      visibility: "hidden"
+    });
+    svg.append(dot);
+    return dot;
+  });
+
+  const hit = svgEl("rect", {
+    x: margin.left, y: 0,
+    width: plotW, height,
+    fill: "transparent"
+  });
+  svg.append(hit);
+
+  const wrap = document.createElement("div");
+  wrap.className = "chart-wrap";
+
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.hidden = true;
+
+  wrap.append(svg, tooltip);
+  container.append(wrap);
+
+  const hide = () => {
+    crosshair.setAttribute("visibility", "hidden");
+    dots.forEach((dot) => dot.setAttribute("visibility", "hidden"));
+    tooltip.hidden = true;
+  };
+
+  hit.addEventListener("pointerleave", hide);
+
+  hit.addEventListener("pointermove", (pointerEvent) => {
+    const box = svg.getBoundingClientRect();
+    const seconds = ((pointerEvent.clientX - box.left - margin.left) / plotW) *
+      options.duration;
+
+    let nearest = points[0];
+
+    points.forEach((point) => {
+      if (Math.abs(point.t - seconds) < Math.abs(nearest.t - seconds)) {
+        nearest = point;
+      }
+    });
+
+    const xPos = x(nearest.t);
+
+    crosshair.setAttribute("x1", xPos);
+    crosshair.setAttribute("x2", xPos);
+    crosshair.setAttribute("visibility", "visible");
+
+    dots.forEach((dot, index) => {
+      dot.setAttribute("cx", xPos);
+      dot.setAttribute("cy", y(nearest[options.series[index].key]));
+      dot.setAttribute("visibility", "visible");
+    });
+
+    tooltip.textContent = "";
+
+    const time = document.createElement("div");
+    time.className = "chart-tooltip-time";
+    time.textContent = `at ${formatClock(nearest.t)}`;
+    tooltip.append(time);
+
+    options.series.forEach((series) => {
+      const row = document.createElement("div");
+      const key = document.createElement("i");
+      key.style.background = series.color;
+      const value = document.createElement("strong");
+      value.textContent = `${Math.round(nearest[series.key])}${options.unit}`;
+      row.append(key, value, document.createTextNode(` ${series.name}`));
+      tooltip.append(row);
+    });
+
+    const flagged = options.events.find(
+      (event) => Math.abs(event.seconds - nearest.t) <= 0.5
+    );
+
+    if (flagged) {
+      const note = document.createElement("div");
+      note.className = "chart-tooltip-event";
+      note.textContent = `Flagged: ${flagged.short}`;
+      tooltip.append(note);
+    }
+
+    tooltip.hidden = false;
+
+    // Flip to the left of the crosshair near the right edge.
+    let left = xPos + 12;
+
+    if (left + tooltip.offsetWidth > width) {
+      left = xPos - tooltip.offsetWidth - 12;
+    }
+
+    tooltip.style.left = `${Math.max(0, left)}px`;
+    tooltip.style.top = `${margin.top}px`;
+  });
+}
+
+function timelineTable() {
+  // One row per second keeps the table readable.
+  const rows = [];
+  let nextSecond = 0;
+
+  state.timeline.forEach((point) => {
+    if (point.t >= nextSecond) {
+      rows.push(`
+        <tr>
+          <td>${formatClock(point.t)}</td>
+          <td>${Math.round(point.left)}°</td>
+          <td>${Math.round(point.right)}°</td>
+          <td>${Math.round(point.lean)}°</td>
+        </tr>
+      `);
+      nextSecond = Math.floor(point.t) + 1;
+    }
+  });
+
+  return `
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Left knee</th><th>Right knee</th><th>Upper-body lean</th></tr>
+      </thead>
+      <tbody>${rows.join("")}</tbody>
+    </table>
+  `;
 }
 
 function getHistory() {
@@ -670,10 +1345,19 @@ function renderHistory() {
     const duration =
       `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 
-    return `
-      <article class="history-item">
-        <div>
-          <h3>Movement observation</h3>
+    // Older saved items have no summary; keep their original wording.
+    const details = item.summary
+      ? `
+          ${levelBadge(item.summary.level)}
+          <p>${escapeHtml(date)} · ${duration}</p>
+          ${item.summary.signs.length
+            ? `<p>${item.summary.signs.map(escapeHtml).join(" · ")}</p>`
+            : ""}
+          ${summaryFacts(item.summary).slice(1).map(([name, value]) =>
+            `<p><strong>${escapeHtml(name)}:</strong> ${escapeHtml(value).replace(/\n/g, "; ")}</p>`
+          ).join("")}
+        `
+      : `
           <p>
             ${escapeHtml(date)} · ${duration} ·
             ${Number(item.usableFrameRatio) || 0}% frames met visibility threshold
@@ -681,6 +1365,13 @@ function renderHistory() {
           <p>
             ${Number(item.candidateEvents) || 0} candidate movement event(s)
           </p>
+        `;
+
+    return `
+      <article class="history-item">
+        <div>
+          <h3>Movement observation</h3>
+          ${details}
         </div>
 
         <div class="history-meta">
@@ -819,6 +1510,10 @@ window.addEventListener("beforeunload", () => {
 window.addEventListener("resize", () => {
   if (video.readyState >= 2) {
     resizeCanvas();
+  }
+
+  if (state.summary && state.timeline.length >= 2) {
+    drawSummaryCharts();
   }
 });
 
