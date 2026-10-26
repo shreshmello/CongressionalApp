@@ -1,4 +1,4 @@
-# MobilityMind — Real-Time Movement Observation Prototype
+#Motus— Real-Time Movement Observation Prototype
 
 This version replaces video uploads with a browser camera preview and
 on-device pose estimation.
