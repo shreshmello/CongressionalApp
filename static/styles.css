@@ -632,6 +632,251 @@ input:focus-visible {
   margin-left: auto;
 }
 
+.summary-panel {
+  margin-top: 16px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: #fff;
+}
+
+.summary-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.summary-lead {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+  max-width: 62ch;
+}
+
+.summary-panel h4 {
+  font-size: 13px;
+  margin: 22px 0 8px;
+}
+
+.level-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px 7px 8px;
+  border-radius: 999px;
+  font-family: Manrope, sans-serif;
+  font-weight: 800;
+  font-size: 18px;
+}
+
+.level-icon {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: #fff;
+}
+
+.level-none { background: var(--sage); color: var(--sage-deep); }
+.level-none .level-icon { background: var(--sage-dark); }
+
+.level-some { background: var(--peach); color: #7a4a2b; }
+.level-some .level-icon { background: var(--warning); }
+
+.level-several { background: #f8dfd9; color: #8a2f22; }
+.level-several .level-icon { background: #b4442f; }
+
+.level-unclear { background: #eceeea; color: #4d5a54; }
+.level-unclear .level-icon { background: var(--muted); }
+
+.history-item .level-badge {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.history-item .level-icon {
+  min-width: 20px;
+  height: 20px;
+  font-size: 11px;
+}
+
+.summary-signs {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.summary-signs li {
+  margin: 3px 0;
+}
+
+.summary-facts {
+  margin: 0;
+}
+
+.summary-fact {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.summary-fact dt {
+  color: var(--muted);
+}
+
+.summary-fact dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.summary-charts {
+  display: grid;
+  gap: 18px;
+}
+
+.chart-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 14px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  color: var(--muted);
+}
+
+.chart-legend span,
+.chart-tooltip div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend i,
+.chart-tooltip i {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+}
+
+.chart-wrap {
+  position: relative;
+}
+
+.chart-wrap svg {
+  display: block;
+  max-width: 100%;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart-axis {
+  stroke: #c9d3c7;
+  stroke-width: 1;
+}
+
+.chart-tick {
+  font-size: 10px;
+  fill: #89968e;
+}
+
+.chart-event {
+  stroke: #b4442f;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.chart-event-label {
+  font-size: 11px;
+  font-weight: 800;
+  fill: #b4442f;
+}
+
+.chart-crosshair {
+  stroke: var(--ink);
+  stroke-width: 1;
+  opacity: .35;
+}
+
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  min-width: 130px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chart-tooltip strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.chart-tooltip-time {
+  margin-bottom: 3px;
+}
+
+.chart-tooltip-event {
+  margin-top: 4px;
+  color: #8a2f22;
+  font-weight: 700;
+}
+
+.summary-table {
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+.summary-table summary {
+  cursor: pointer;
+  color: var(--sage-dark);
+  font-weight: 700;
+}
+
+.table-scroll {
+  max-height: 260px;
+  overflow: auto;
+  margin-top: 8px;
+}
+
+.summary-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.summary-table th,
+.summary-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+@media (max-width: 650px) {
+  .summary-fact {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
 .questionnaire-card {
   padding: 25px;
 }
