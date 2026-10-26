@@ -1,7 +1,7 @@
 import {
   FilesetResolver,
   PoseLandmarker
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21";
 
 const $ = (id) => document.getElementById(id);
 
@@ -321,7 +321,7 @@ async function loadPoseModel() {
   setMessage("Loading the pose model. This may take a moment the first time.");
 
   const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm"
   );
 
   state.landmarker = await PoseLandmarker.createFromOptions(vision, {
