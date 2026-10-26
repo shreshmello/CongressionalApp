@@ -94,7 +94,7 @@ def extract_video_features(video_path, sample_every=2, max_frames=1800):
             if min(visibility) < 0.35:
                 continue
 
-            left_shoulder, right_shoulder, left_hip, right_hip = selected
+            left_shoulder, right_shoulder, left_hip, right_hip, left_knee, right_knee = selected
 
             shoulder_x = (left_shoulder.x + right_shoulder.x) / 2
             shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
