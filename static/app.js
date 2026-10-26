@@ -3,19 +3,34 @@ import {
   PoseLandmarker
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21";
 
+"use strict";
+
+// ============================================================
+// MOTUS — Live Movement Observation Prototype
+//
+// Important:
+// - Experimental movement observations only.
+// - Not a medical device.
+// - Not validated for predicting future falls.
+// - Hip displacement uses normalized image coordinates,
+//   not centimeters or real-world distance.
+// ============================================================
+
 const $ = (id) => document.getElementById(id);
 
 const video = $("cameraVideo");
 const canvas = $("overlayCanvas");
-const ctx = canvas.getContext("2d");
+const ctx = canvas?.getContext("2d");
+
+const HISTORY_KEY = "mobilitymind_history";
+const SCREENING_KEY = "mobilitymind_screening";
 
 const state = {
   stream: null,
   landmarker: null,
-  raf: null,
-
   running: false,
   observing: false,
+  raf: null,
 
   lastVideoTime: -1,
   startAt: 0,
@@ -27,16 +42,30 @@ const state = {
 
   samples: [],
   events: [],
-  lastEventAt: 0,
 
-  currentFeatures: null,
-  visibility: 0,
+  lastEventAt: 0,
+  candidateStreak: 0,
+  lastMetricFeature: null,
 
   totalFrames: 0,
   goodFrames: 0,
 
   questionnaire: null
 };
+
+// MediaPipe landmark indices.
+const LANDMARKS = {
+  leftShoulder: 11,
+  rightShoulder: 12,
+  leftHip: 23,
+  rightHip: 24,
+  leftKnee: 25,
+  rightKnee: 26,
+  leftAnkle: 27,
+  rightAnkle: 28
+};
+
+const IMPORTANT_LANDMARKS = Object.values(LANDMARKS);
 
 const CONNECTIONS = [
   [11, 12],
@@ -57,19 +86,95 @@ const CONNECTIONS = [
   [30, 32]
 ];
 
-function setMessage(text) {
-  $("cameraMessage").textContent = text;
+// Experimental event thresholds.
+// These are engineering parameters, NOT clinical thresholds.
+const SETTINGS = {
+  visibilityMinimum: 0.55,
+
+  // Compare poses approximately 150–400 ms apart.
+  comparisonMinimumMs: 150,
+  comparisonMaximumMs: 400,
+
+  // Normalized image-coordinate change per second.
+  hipSpeedThreshold: 0.42,
+
+  // Torso angle change.
+  torsoSpeedThreshold: 75,
+  torsoAngleThreshold: 13,
+
+  // Require repeated candidate frames before recording an event.
+  requiredCandidateFrames: 3,
+
+  // Prevent repeated events from the same continuous movement.
+  eventCooldownMs: 3000,
+
+  // Clear old samples to keep calculations recent.
+  sampleWindowMs: 2500
+};
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+
+function setMessage(message) {
+  const element = $("cameraMessage");
+
+  if (element) {
+    element.textContent = message;
+  }
 }
 
-function setStatus(text, active = false) {
-  $("cameraStatus").innerHTML =
-    `<span class="status-dot"></span> ${text}`;
+function setStatus(message, active = false) {
+  const element = $("cameraStatus");
 
-  $("cameraStatus").classList.toggle("active", active);
+  if (!element) return;
+
+  const dot = document.createElement("span");
+  dot.className = "status-dot";
+
+  element.replaceChildren(dot, document.createTextNode(` ${message}`));
+  element.classList.toggle("active", active);
 }
+
+function setText(id, value) {
+  const element = $(id);
+
+  if (element) {
+    element.textContent = String(value);
+  }
+}
+
+function setDisabled(id, disabled) {
+  const element = $(id);
+
+  if (element) {
+    element.disabled = disabled;
+  }
+}
+
+function setDisplay(id, value) {
+  const element = $(id);
+
+  if (element) {
+    element.style.display = value;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+
+// ============================================================
+// POSE FEATURE CALCULATIONS
+// ============================================================
 
 function angleDegrees(hip, shoulder) {
-  // Approximate torso angle relative to vertical in image coordinates.
   const dx = shoulder.x - hip.x;
   const dy = shoulder.y - hip.y;
 
@@ -96,22 +201,170 @@ function kneeAngle(hip, knee, ankle) {
 
 function meanVisibility(landmarks, indices) {
   const values = indices
-    .map((index) => Number(landmarks[index]?.visibility ?? 0))
+    .map((index) => {
+      const point = landmarks[index];
+
+      return Number(
+        point?.visibility ?? point?.presence ?? 0
+      );
+    })
     .filter(Number.isFinite);
 
   if (!values.length) {
     return 0;
   }
 
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.reduce((sum, value) => sum + value, 0)
+    / values.length;
 }
 
+function extractFeatures(landmarks, now) {
+  const visibility = meanVisibility(
+    landmarks,
+    IMPORTANT_LANDMARKS
+  );
+
+  const leftShoulder = landmarks[LANDMARKS.leftShoulder];
+  const rightShoulder = landmarks[LANDMARKS.rightShoulder];
+
+  const leftHip = landmarks[LANDMARKS.leftHip];
+  const rightHip = landmarks[LANDMARKS.rightHip];
+
+  const leftKnee = landmarks[LANDMARKS.leftKnee];
+  const rightKnee = landmarks[LANDMARKS.rightKnee];
+
+  const leftAnkle = landmarks[LANDMARKS.leftAnkle];
+  const rightAnkle = landmarks[LANDMARKS.rightAnkle];
+
+  if (
+    !leftShoulder ||
+    !rightShoulder ||
+    !leftHip ||
+    !rightHip ||
+    !leftKnee ||
+    !rightKnee ||
+    !leftAnkle ||
+    !rightAnkle
+  ) {
+    return null;
+  }
+
+  const shoulder = {
+    x: (leftShoulder.x + rightShoulder.x) / 2,
+    y: (leftShoulder.y + rightShoulder.y) / 2
+  };
+
+  const hip = {
+    x: (leftHip.x + rightHip.x) / 2,
+    y: (leftHip.y + rightHip.y) / 2
+  };
+
+  const torsoAngle = angleDegrees(hip, shoulder);
+
+  if (
+    !Number.isFinite(hip.x) ||
+    !Number.isFinite(hip.y) ||
+    !Number.isFinite(torsoAngle) ||
+    !Number.isFinite(visibility)
+  ) {
+    return null;
+  }
+
+  return {
+    time: now,
+    visibility,
+    hipX: hip.x,
+    hipY: hip.y,
+    torsoAngle,
+    leftKneeAngle: kneeAngle(leftHip, leftKnee, leftAnkle),
+    rightKneeAngle: kneeAngle(rightHip, rightKnee, rightAnkle)
+  };
+}
+
+// Calculate the smallest angular difference.
+function angleDifference(a, b) {
+  let difference = Math.abs(a - b);
+
+  if (difference > 180) {
+    difference = 360 - difference;
+  }
+
+  return difference;
+}
+
+// ============================================================
+// HIP DISPLACEMENT METRIC
+// ============================================================
+
+// Measures how far the hip midpoint moved between two detected
+// poses. Coordinates are normalized to the image, not centimeters.
+
+function calculateHipDisplacement(current, previous) {
+  if (!previous) {
+    return null;
+  }
+
+  const elapsedSeconds =
+    (current.time - previous.time) / 1000;
+
+  if (elapsedSeconds <= 0) {
+    return null;
+  }
+
+  const displacement = Math.hypot(
+    current.hipX - previous.hipX,
+    current.hipY - previous.hipY
+  );
+
+  return {
+    displacement,
+    elapsedSeconds,
+    speed: displacement / elapsedSeconds
+  };
+}
+
+function updateHipMetric(features) {
+  const previous = state.lastMetricFeature;
+
+  const result = calculateHipDisplacement(
+    features,
+    previous
+  );
+
+  state.lastMetricFeature = features;
+
+  if (!result) {
+    setText("hipValue", "—");
+    return;
+  }
+
+  // Display displacement over the actual interval, rather than
+  // distance from the top-left corner of the image.
+  setText(
+    "hipValue",
+    `${result.displacement.toFixed(4)} units`
+  );
+}
+
+// ============================================================
+// DRAW POSE OVERLAY
+// ============================================================
+
 function resizeCanvas() {
+  if (!video || !canvas || !ctx) return;
+
   const rect = video.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
 
-  canvas.width = Math.max(1, Math.round(rect.width * dpr));
-  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  canvas.width = Math.max(
+    1,
+    Math.round(rect.width * dpr)
+  );
+
+  canvas.height = Math.max(
+    1,
+    Math.round(rect.height * dpr)
+  );
 
   canvas.style.width = `${rect.width}px`;
   canvas.style.height = `${rect.height}px`;
@@ -120,25 +373,26 @@ function resizeCanvas() {
 }
 
 function drawPose(landmarks) {
+  if (!video || !canvas || !ctx) return;
+
   resizeCanvas();
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  if (!landmarks) {
-    return;
-  }
 
   const width = video.clientWidth;
   const height = video.clientHeight;
 
-  // Mirror the landmark overlay to match the mirrored video preview.
+  ctx.clearRect(0, 0, width, height);
+
+  if (!landmarks) return;
+
   ctx.save();
+
+  // Mirror skeleton to match a mirrored camera preview.
   ctx.translate(width, 0);
   ctx.scale(-1, 1);
 
   ctx.lineWidth = 3;
-  ctx.strokeStyle = "rgba(221, 242, 221, .92)";
-  ctx.fillStyle = "rgba(74, 125, 94, .95)";
+  ctx.strokeStyle = "rgba(221, 242, 221, 0.92)";
+  ctx.fillStyle = "rgba(74, 125, 94, 0.95)";
 
   for (const [a, b] of CONNECTIONS) {
     const p = landmarks[a];
@@ -160,6 +414,7 @@ function drawPose(landmarks) {
   for (const point of landmarks) {
     if ((point.visibility ?? 0) > 0.45) {
       ctx.beginPath();
+
       ctx.arc(
         point.x * width,
         point.y * height,
@@ -167,6 +422,7 @@ function drawPose(landmarks) {
         0,
         Math.PI * 2
       );
+
       ctx.fill();
     }
   }
@@ -174,225 +430,56 @@ function drawPose(landmarks) {
   ctx.restore();
 }
 
-function extractFeatures(landmarks, now) {
-  const important = [
-    11, 12, 23, 24, 25, 26, 27, 28
-  ];
-
-  const visibility = meanVisibility(landmarks, important);
-
-  const leftShoulder = landmarks[11];
-  const rightShoulder = landmarks[12];
-
-  const leftHip = landmarks[23];
-  const rightHip = landmarks[24];
-
-  const leftKnee = landmarks[25];
-  const rightKnee = landmarks[26];
-
-  const leftAnkle = landmarks[27];
-  const rightAnkle = landmarks[28];
-
-  if (
-    !leftShoulder ||
-    !rightShoulder ||
-    !leftHip ||
-    !rightHip ||
-    !rightKnee ||
-    !leftKnee ||
-    !leftAnkle ||
-    !rightAnkle
-  ) {
-    return null;
-  }
-
-  const shoulder = {
-    x: (leftShoulder.x + rightShoulder.x) / 2,
-    y: (leftShoulder.y + rightShoulder.y) / 2
-  };
-
-  const hip = {
-    x: (leftHip.x + rightHip.x) / 2,
-    y: (leftHip.y + rightHip.y) / 2
-  };
-
-  const torsoAngle = angleDegrees(hip, shoulder);
-
-  return {
-    time: now,
-    visibility,
-    hipX: hip.x,
-    hipY: hip.y,
-    torsoAngle,
-    leftKneeAngle: kneeAngle(leftHip, leftKnee, leftAnkle),
-    rightKneeAngle: kneeAngle(rightHip, rightKnee, rightAnkle)
-  };
-}
-
-function classifyMovement(features) {
-  const recentSamples = state.samples.filter(
-    (sample) => features.time - sample.time <= 1000
-  );
-
-  const priorSamples = recentSamples.filter((sample) => {
-    const elapsed = features.time - sample.time;
-
-    return elapsed >= 120 && elapsed <= 350;
-  });
-
-  if (!priorSamples.length) {
-    return {
-      label: "Tracking movement",
-      detail: "Collecting enough frames to compare movement over time.",
-      event: false
-    };
-  }
-
-  const reference = priorSamples[priorSamples.length - 1];
-  const elapsedSeconds = (features.time - reference.time) / 1000;
-
-  if (elapsedSeconds <= 0) {
-    return {
-      label: "Tracking movement",
-      detail: "Collecting movement frames.",
-      event: false
-    };
-  }
-
-  // Position change is measured in normalized image coordinates.
-  const hipDelta = Math.hypot(
-    features.hipX - reference.hipX,
-    features.hipY - reference.hipY
-  );
-
-  let angleDelta = Math.abs(
-    features.torsoAngle - reference.torsoAngle
-  );
-
-  // Account for wraparound in angle measurements.
-  if (angleDelta > 180) {
-    angleDelta = 360 - angleDelta;
-  }
-
-  const hipChangePerSecond = hipDelta / elapsedSeconds;
-  const angleChangePerSecond = angleDelta / elapsedSeconds;
-
-  /*
-   * These thresholds are experimental placeholders.
-   * They are not clinically derived and are not a fall prediction.
-   */
-  const rapidPositionChange = hipChangePerSecond > 0.42;
-
-  const rapidTorsoChange =
-    angleChangePerSecond > 75 &&
-    angleDelta > 13;
-
-  const candidate =
-    features.visibility >= 0.55 &&
-    (rapidPositionChange || rapidTorsoChange);
-
-  /*
-   * Record candidate events only during an active observation.
-   * This prevents alerts from accumulating before the user starts.
-   */
-  if (
-    candidate &&
-    state.observing &&
-    features.time - state.lastEventAt > 3000
-  ) {
-    state.lastEventAt = features.time;
-
-    let explanation;
-    let short;
-
-    if (rapidPositionChange && rapidTorsoChange) {
-      explanation =
-        "A rapid hip-center shift and torso-angle change were detected.";
-      short = "sudden hip shift and upper-body lean";
-    } else if (rapidPositionChange) {
-      explanation =
-        "A rapid change in detected hip-center position was observed.";
-      short = "sudden shift of the hips";
-    } else {
-      explanation =
-        "A rapid change in detected torso angle was observed.";
-      short = "sudden lean of the upper body";
-    }
-
-    state.events.push({
-      at: new Date().toISOString(),
-      seconds: (features.time - state.startAt) / 1000,
-      label: "Candidate movement change",
-      detail: explanation,
-      short
-    });
-
-    $("eventCount").textContent = String(state.events.length);
-
-    $("eventHeadline").textContent = "Movement change detected";
-
-    $("eventDescription").textContent =
-      explanation +
-      " This can happen for many reasons and does not mean a fall is imminent.";
-
-    $("eventCardTitle").textContent = "Candidate event recorded";
-
-    $("eventCardText").textContent =
-      explanation +
-      " Review the context; this is not a fall prediction.";
-
-    $("eventCard").style.borderColor = "#e6c8ad";
-    $("eventCard").style.background = "#fff8f1";
-  }
-
-  return {
-    label: candidate ? "Movement change detected" : "Tracking movement",
-    detail: "Exploratory image-based movement features.",
-    event: candidate,
-    hipDelta,
-    angleDelta
-  };
-}
+// ============================================================
+// MEDIAPIPE MODEL
+// ============================================================
 
 async function loadPoseModel() {
-  if (state.landmarker) {
-    return;
-  }
+  if (state.landmarker) return;
 
-  setMessage("Loading the pose model. This may take a moment the first time.");
+  setMessage("Loading the pose-tracking model...");
 
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm"
   );
 
-  state.landmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath:
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-    },
-
-    runningMode: "VIDEO",
-    numPoses: 1,
-
-    minPoseDetectionConfidence: 0.55,
-    minPosePresenceConfidence: 0.55,
-    minTrackingConfidence: 0.55
-  });
+  state.landmarker = await PoseLandmarker.createFromOptions(
+    vision,
+    {
+      baseOptions: {
+        modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+      },
+      runningMode: "VIDEO",
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.55,
+      minPosePresenceConfidence: 0.55,
+      minTrackingConfidence: 0.55
+    }
+  );
 }
 
+// ============================================================
+// CAMERA CONTROLS
+// ============================================================
+
 async function startCamera() {
+  const button = $("startCameraButton");
+
+  if (!button || state.running) return;
+
+  button.disabled = true;
+
+  setMessage("Requesting camera access...");
+
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error(
-        "Camera access requires a secure context. Open this site using localhost or HTTPS."
+        "Camera access is unavailable. Open the app using localhost or HTTPS."
       );
     }
 
-    $("startCameraButton").disabled = true;
-
-    await loadPoseModel();
-
-    state.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: "user",
         width: { ideal: 1280 },
@@ -401,57 +488,237 @@ async function startCamera() {
       audio: false
     });
 
-    video.srcObject = state.stream;
+    state.stream = stream;
+
+    video.srcObject = stream;
 
     await video.play();
 
     video.style.display = "block";
-    $("cameraPlaceholder").style.display = "none";
-    $("cameraStage").classList.add("camera-active");
-    $("poseBadge").style.display = "block";
 
-    $("startObservationButton").disabled = false;
-    $("stopButton").disabled = false;
+    setDisplay("cameraPlaceholder", "none");
+
+    $("cameraStage")?.classList.add("camera-active");
+
+    setDisplay("poseBadge", "block");
 
     state.running = true;
     state.lastVideoTime = -1;
+    state.lastMetricFeature = null;
 
     setStatus("Camera on", true);
 
-    setMessage(
-      "Camera is on. Keep the person in view; begin an observation when ready."
-    );
+    setDisabled("stopButton", false);
 
-    renderLoop();
+    setMessage("Camera is on. Loading pose tracking...");
+
+    try {
+      await loadPoseModel();
+
+      if (!state.running) return;
+
+      setDisabled("startObservationButton", false);
+
+      setMessage(
+        "Camera and pose tracking are ready. Begin an observation when ready."
+      );
+
+      renderLoop();
+
+    } catch (error) {
+      console.error("MediaPipe model loading failed:", error);
+
+      setMessage(
+        "Camera is on, but pose tracking failed to load. Check your internet connection and Console."
+      );
+
+      setText("poseBadge", "Pose model unavailable");
+    }
 
   } catch (error) {
-    console.error(error);
+    console.error("Camera startup failed:", error);
 
-    setMessage(
-      error?.message ||
-      "Could not start the camera. Check browser permissions and try again."
-    );
+    state.stream?.getTracks().forEach((track) => track.stop());
 
-    $("startCameraButton").disabled = false;
+    state.stream = null;
+    video.srcObject = null;
+    state.running = false;
 
     setStatus("Camera unavailable");
+
+    if (error.name === "NotAllowedError") {
+      setMessage(
+        "Camera permission was denied. Allow camera access in Chrome site settings."
+      );
+    } else if (error.name === "NotFoundError") {
+      setMessage("No camera was found.");
+    } else if (error.name === "NotReadableError") {
+      setMessage(
+        "The camera may be in use by another application. Close other camera apps and try again."
+      );
+    } else {
+      setMessage(error.message || "Could not start the camera.");
+    }
+
+    button.disabled = false;
   }
 }
 
-function renderLoop() {
-  if (!state.running) {
-    return;
+// ============================================================
+// EXPERIMENTAL MOVEMENT-CHANGE DETECTION
+// ============================================================
+
+function classifyMovement(features) {
+  const priorSamples = state.samples.filter((sample) => {
+    const elapsed = features.time - sample.time;
+
+    return (
+      elapsed >= SETTINGS.comparisonMinimumMs &&
+      elapsed <= SETTINGS.comparisonMaximumMs
+    );
+  });
+
+  if (!priorSamples.length) {
+    state.candidateStreak = 0;
+    return { event: false };
   }
 
+  const reference = priorSamples[priorSamples.length - 1];
+
+  const elapsedSeconds =
+    (features.time - reference.time) / 1000;
+
+  if (elapsedSeconds <= 0) {
+    state.candidateStreak = 0;
+    return { event: false };
+  }
+
+  const hipDelta = Math.hypot(
+    features.hipX - reference.hipX,
+    features.hipY - reference.hipY
+  );
+
+  const angleDelta = angleDifference(
+    features.torsoAngle,
+    reference.torsoAngle
+  );
+
+  const hipSpeed = hipDelta / elapsedSeconds;
+  const angleSpeed = angleDelta / elapsedSeconds;
+
+  const rapidPositionChange =
+    hipSpeed > SETTINGS.hipSpeedThreshold;
+
+  const rapidTorsoChange =
+    angleSpeed > SETTINGS.torsoSpeedThreshold &&
+    angleDelta > SETTINGS.torsoAngleThreshold;
+
+  const candidate =
+    features.visibility >= SETTINGS.visibilityMinimum &&
+    (rapidPositionChange || rapidTorsoChange);
+
+  // Require multiple consecutive candidate frames to reduce
+  // sensitivity to isolated frame-to-frame noise.
+  if (candidate) {
+    state.candidateStreak++;
+  } else {
+    state.candidateStreak = 0;
+  }
+
+  const enoughFrames =
+    state.candidateStreak >= SETTINGS.requiredCandidateFrames;
+
+  const cooldownPassed =
+    features.time - state.lastEventAt >
+    SETTINGS.eventCooldownMs;
+
   if (
-    video.readyState >= 2 &&
-    video.currentTime !== state.lastVideoTime
+    enoughFrames &&
+    cooldownPassed &&
+    state.observing
   ) {
-    state.lastVideoTime = video.currentTime;
+    state.lastEventAt = features.time;
 
-    const now = performance.now();
+    let detail;
+    let short;
 
-    try {
+    if (rapidPositionChange && rapidTorsoChange) {
+      detail =
+        "A rapid hip-center shift and torso-angle change were observed.";
+      short = "sudden hip shift and upper-body lean";
+    } else if (rapidPositionChange) {
+      detail =
+        "A rapid change in detected hip-center position was observed.";
+      short = "sudden shift of the hips";
+    } else {
+      detail =
+        "A rapid change in detected torso angle was observed.";
+      short = "sudden lean of the upper body";
+    }
+
+    state.events.push({
+      at: new Date().toISOString(),
+      seconds: (features.time - state.startAt) / 1000,
+      label: "Candidate movement change",
+      detail,
+      short,
+      hipSpeed,
+      angleSpeed,
+      visibility: features.visibility
+    });
+
+    setText("eventCount", state.events.length);
+    setText("eventHeadline", "Movement change detected");
+
+    setText(
+      "eventDescription",
+      `${detail} This is an experimental movement flag, not a fall prediction.`
+    );
+
+    setText("eventCardTitle", "Candidate event recorded");
+
+    setText(
+      "eventCardText",
+      `${detail} Review the context; this is not a medical assessment.`
+    );
+
+    const card = $("eventCard");
+
+    if (card) {
+      card.style.borderColor = "#e6c8ad";
+      card.style.background = "#fff8f1";
+    }
+
+    // Reset streak so one continuous movement doesn't generate
+    // another event on every subsequent frame.
+    state.candidateStreak = 0;
+  }
+
+  return {
+    event: candidate,
+    hipDelta,
+    angleDelta,
+    hipSpeed,
+    angleSpeed
+  };
+}
+
+// ============================================================
+// LIVE VIDEO LOOP
+// ============================================================
+
+function renderLoop() {
+  if (!state.running || !state.landmarker) return;
+
+  try {
+    if (
+      video.readyState >= 2 &&
+      video.currentTime !== state.lastVideoTime
+    ) {
+      state.lastVideoTime = video.currentTime;
+
+      const now = performance.now();
+
       const result = state.landmarker.detectForVideo(video, now);
 
       state.totalFrames++;
@@ -464,13 +731,11 @@ function renderLoop() {
         const features = extractFeatures(landmarks, now);
 
         if (features) {
-          state.visibility = features.visibility;
-
-          if (features.visibility >= 0.55) {
+          if (features.visibility >= SETTINGS.visibilityMinimum) {
             state.goodFrames++;
           }
 
-          state.currentFeatures = features;
+          updateHipMetric(features);
 
           const movement = classifyMovement(features);
 
@@ -479,7 +744,7 @@ function renderLoop() {
           // Keep a lighter whole-observation record (5 per second) for the summary.
           if (
             state.observing &&
-            features.visibility >= 0.55 &&
+            features.visibility >= SETTINGS.visibilityMinimum &&
             now - state.lastTimelineAt >= 200
           ) {
             state.lastTimelineAt = now;
@@ -492,86 +757,114 @@ function renderLoop() {
             });
           }
 
-          // Retain only a short recent window in memory.
           state.samples = state.samples.filter(
-            (sample) => now - sample.time < 2500
+            (sample) =>
+              now - sample.time < SETTINGS.sampleWindowMs
           );
 
-          $("poseBadge").textContent =
-            features.visibility >= 0.55
+          setText(
+            "poseBadge",
+            features.visibility >= SETTINGS.visibilityMinimum
               ? "Body detected"
-              : "Improve visibility";
+              : "Improve visibility"
+          );
 
-          $("torsoValue").textContent =
-            `${Math.round(features.torsoAngle)}°`;
+          setText(
+            "torsoValue",
+            `${Math.round(features.torsoAngle)}°`
+          );
 
-          $("hipValue").textContent =
-            `${Math.hypot(features.hipX, features.hipY).toFixed(3)} image units`;
+          setText(
+            "kneeValue",
+            `${Math.round(features.leftKneeAngle)}° / ${Math.round(features.rightKneeAngle)}°`
+          );
 
-          $("kneeValue").textContent =
-            `${Math.round(features.leftKneeAngle)}° / ${Math.round(features.rightKneeAngle)}°`;
+          setText(
+            "visibilityValue",
+            `${Math.round(features.visibility * 100)}%`
+          );
 
-          $("visibilityValue").textContent =
-            `${Math.round(features.visibility * 100)}%`;
+          const qualityBar = $("qualityBar");
 
-          $("qualityBar").style.width =
-            `${Math.round(features.visibility * 100)}%`;
+          if (qualityBar) {
+            qualityBar.style.width =
+              `${Math.round(features.visibility * 100)}%`;
+          }
 
-          $("qualityLabel").textContent =
+          setText(
+            "qualityLabel",
             features.visibility >= 0.75
-              ? "Good"
-              : features.visibility >= 0.55
-                ? "Limited"
-                : "Low";
+              ? "Good visibility"
+              : features.visibility >= SETTINGS.visibilityMinimum
+                ? "Limited visibility"
+                : "Low visibility"
+          );
 
           if (!state.observing) {
-            $("eventHeadline").textContent = "Body detected";
+            setText("eventHeadline", "Body detected");
 
-            $("eventDescription").textContent =
-              "Pose tracking is working. Begin an observation to record candidate movement changes.";
-
+            setText(
+              "eventDescription",
+              "Pose tracking is working. Begin an observation to record candidate movement changes."
+            );
           } else if (!movement.event) {
-            $("eventHeadline").textContent = "Monitoring movement";
+            setText("eventHeadline", "Monitoring movement");
 
-            $("eventDescription").textContent =
-              "No candidate movement change detected in this frame. This does not mean the person is safe from falling.";
+            setText(
+              "eventDescription",
+              "No candidate movement change currently meets the experimental rule."
+            );
           }
         }
-
       } else {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx?.clearRect(0, 0, canvas.width, canvas.height);
 
-        $("poseBadge").textContent = "No body detected";
-        $("qualityLabel").textContent = "Not available";
-        $("qualityBar").style.width = "0%";
+        state.lastMetricFeature = null;
+        state.candidateStreak = 0;
+
+        setText("poseBadge", "No body detected");
+        setText("qualityLabel", "Not available");
+        setText("visibilityValue", "—");
+        setText("hipValue", "—");
+        setText("kneeValue", "—");
+
+        const qualityBar = $("qualityBar");
+
+        if (qualityBar) {
+          qualityBar.style.width = "0%";
+        }
       }
-
-    } catch (error) {
-      console.error("Pose inference failed:", error);
     }
+  } catch (error) {
+    console.error("Pose inference failed:", error);
+
+    setMessage(
+      "Pose tracking encountered an error. Check the browser Console."
+    );
   }
 
   if (state.observing) {
-    $("elapsedTime").textContent =
-      formatElapsed(performance.now() - state.startAt);
+    setText(
+      "elapsedTime",
+      formatElapsed(performance.now() - state.startAt)
+    );
   }
 
-  state.raf = requestAnimationFrame(renderLoop);
+  if (state.running) {
+    state.raf = requestAnimationFrame(renderLoop);
+  }
 }
 
-function formatElapsed(milliseconds) {
-  const seconds = Math.floor(milliseconds / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-
-  return (
-    `${String(minutes).padStart(2, "0")}:` +
-    `${String(remainingSeconds).padStart(2, "0")}`
-  );
-}
+// ============================================================
+// OBSERVATION CONTROLS
+// ============================================================
 
 function beginObservation() {
-  if (!state.stream || !state.running) {
+  if (!state.stream || !state.running || !state.landmarker) {
+    setMessage(
+      "Start the camera and wait for pose tracking to finish loading."
+    );
+
     return;
   }
 
@@ -580,7 +873,10 @@ function beginObservation() {
 
   state.samples = [];
   state.events = [];
+
   state.lastEventAt = 0;
+  state.candidateStreak = 0;
+  state.lastMetricFeature = null;
 
   state.endAt = 0;
   state.timeline = [];
@@ -591,22 +887,29 @@ function beginObservation() {
   state.totalFrames = 0;
   state.goodFrames = 0;
 
-  $("eventCount").textContent = "0";
-  $("elapsedTime").textContent = "00:00";
+  setText("eventCount", "0");
+  setText("elapsedTime", "00:00");
 
-  $("saveObservationButton").disabled = false;
-  $("startObservationButton").disabled = true;
+  setDisabled("saveObservationButton", false);
+  setDisabled("startObservationButton", true);
 
-  $("eventCardTitle").textContent = "No observation events yet";
+  setText("eventHeadline", "Monitoring movement");
+  setText("eventCardTitle", "No observation events yet");
 
-  $("eventCardText").textContent =
-    "The app will flag experimental movement changes that cross its current thresholds.";
+  setText(
+    "eventCardText",
+    "Experimental movement changes may be recorded for review."
+  );
 
-  $("eventCard").style.borderColor = "";
-  $("eventCard").style.background = "";
+  const card = $("eventCard");
+
+  if (card) {
+    card.style.borderColor = "";
+    card.style.background = "";
+  }
 
   setMessage(
-    "Observation started. Stay in a safe, comfortable position; do not attempt to trigger an event."
+    "Observation started. Remain in a safe, comfortable position. No sudden movements are needed."
   );
 }
 
@@ -620,105 +923,54 @@ function stopEverything() {
   state.observing = false;
   state.running = false;
 
-  if (state.raf) {
+  if (state.raf !== null) {
     cancelAnimationFrame(state.raf);
   }
 
   state.raf = null;
 
-  if (state.stream) {
-    state.stream.getTracks().forEach((track) => track.stop());
-  }
-
+  state.stream?.getTracks().forEach((track) => track.stop());
   state.stream = null;
 
-  video.pause();
-  video.srcObject = null;
-  video.style.display = "none";
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+    video.style.display = "none";
+  }
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (ctx && canvas) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
 
-  $("cameraPlaceholder").style.display = "block";
-  $("poseBadge").style.display = "none";
+  setDisplay("cameraPlaceholder", "block");
+  setDisplay("poseBadge", "none");
 
-  $("startCameraButton").disabled = false;
-  $("startObservationButton").disabled = true;
-  $("stopButton").disabled = true;
+  setText("poseBadge", "Waiting for camera");
 
-  // Keep Save enabled if a completed observation has data.
-  $("saveObservationButton").disabled =
-    !(wasObserving || state.totalFrames > 0);
+  setDisabled("startCameraButton", false);
+  setDisabled("startObservationButton", true);
+  setDisabled("stopButton", true);
 
   setStatus("Camera off");
+  setMessage("Camera stopped. Camera frames are not saved.");
 
-  setMessage(
-    "Camera stopped. Camera frames are not saved by this prototype."
-  );
+  if (state.totalFrames > 0) {
+    setDisabled("saveObservationButton", false);
+  }
+
+  state.lastMetricFeature = null;
+  state.candidateStreak = 0;
 
   if (wasObserving) {
     state.summary = buildSummary();
     renderSummary();
-    $("summaryPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+    $("summaryPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
-
-  $("poseBadge").textContent = "Waiting for camera";
 }
 
-function saveObservation() {
-  // Saving mid-observation summarizes everything up to now.
-  if (state.observing || !state.summary) {
-    state.summary = buildSummary();
-    renderSummary();
-  }
-
-  const duration = state.startAt
-    ? Math.max(0, (state.endAt || performance.now()) - state.startAt)
-    : 0;
-
-  const quality = state.totalFrames
-    ? state.goodFrames / state.totalFrames
-    : 0;
-
-  const item = {
-    id: crypto.randomUUID
-      ? crypto.randomUUID()
-      : String(Date.now()),
-
-    date: new Date().toISOString(),
-
-    durationSeconds: Math.round(duration / 1000),
-
-    candidateEvents: state.events.length,
-
-    usableFrameRatio: Math.round(quality * 100),
-
-    summary: state.summary,
-
-    eventSummaries: state.events.map((event) => ({
-      at: event.at,
-      label: event.label,
-      detail: event.detail
-    })),
-
-    note:
-      "Experimental movement-change flags are not a fall prediction or medical assessment."
-  };
-
-  const history = getHistory();
-
-  history.unshift(item);
-
-  localStorage.setItem(
-    "mobilitymind_history",
-    JSON.stringify(history.slice(0, 25))
-  );
-
-  renderHistory();
-
-  setMessage(
-    "Observation summary saved locally in this browser. No camera frames were saved."
-  );
-}
+// ============================================================
+// OBSERVATION SUMMARY
+// ============================================================
 
 const SUMMARY_LEVELS = {
   none: {
@@ -937,6 +1189,8 @@ function levelBadge(level) {
 function renderSummary() {
   const panel = $("summaryPanel");
   const summary = state.summary;
+
+  if (!panel) return;
 
   if (!summary) {
     panel.hidden = true;
@@ -1311,18 +1565,85 @@ function timelineTable() {
   `;
 }
 
+// ============================================================
+// LOCAL HISTORY
+// ============================================================
+
 function getHistory() {
   try {
     return JSON.parse(
-      localStorage.getItem("mobilitymind_history") || "[]"
+      localStorage.getItem(HISTORY_KEY) || "[]"
     );
-  } catch {
+  } catch (error) {
+    console.error("Could not read observation history:", error);
     return [];
   }
 }
 
+function saveObservation() {
+  // Saving mid-observation summarizes everything up to now.
+  if (state.observing || !state.summary) {
+    state.summary = buildSummary();
+    renderSummary();
+  }
+
+  const duration = state.startAt
+    ? Math.max(0, (state.endAt || performance.now()) - state.startAt)
+    : 0;
+
+  const quality = state.totalFrames
+    ? state.goodFrames / state.totalFrames
+    : 0;
+
+  const item = {
+    id: globalThis.crypto?.randomUUID
+      ? crypto.randomUUID()
+      : String(Date.now()),
+
+    date: new Date().toISOString(),
+
+    durationSeconds: Math.round(duration / 1000),
+
+    candidateEvents: state.events.length,
+
+    usableFrameRatio: Math.round(quality * 100),
+
+    summary: state.summary,
+
+    eventSummaries: state.events.map((event) => ({
+      at: event.at,
+      label: event.label,
+      detail: event.detail,
+      hipSpeed: event.hipSpeed,
+      angleSpeed: event.angleSpeed,
+      visibility: event.visibility
+    })),
+
+    note:
+      "Experimental movement-change flags are not a fall prediction or medical assessment."
+  };
+
+  const history = getHistory();
+
+  history.unshift(item);
+
+  localStorage.setItem(
+    HISTORY_KEY,
+    JSON.stringify(history.slice(0, 25))
+  );
+
+  renderHistory();
+
+  setMessage(
+    "Observation summary saved locally in this browser. No camera frames were saved."
+  );
+}
+
 function renderHistory() {
   const list = $("historyList");
+
+  if (!list) return;
+
   const items = getHistory();
 
   if (!items.length) {
@@ -1362,9 +1683,7 @@ function renderHistory() {
             ${escapeHtml(date)} · ${duration} ·
             ${Number(item.usableFrameRatio) || 0}% frames met visibility threshold
           </p>
-          <p>
-            ${Number(item.candidateEvents) || 0} candidate movement event(s)
-          </p>
+          <p>${Number(item.candidateEvents) || 0} candidate movement event(s)</p>
         `;
 
     return `
@@ -1376,6 +1695,7 @@ function renderHistory() {
 
         <div class="history-meta">
           <strong>Local summary</strong>
+
           <button
             class="button button-quiet export-one"
             data-id="${escapeHtml(item.id)}"
@@ -1395,16 +1715,6 @@ function renderHistory() {
   });
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[character]));
-}
-
 function downloadJson(data, filename) {
   const blob = new Blob(
     [JSON.stringify(data, null, 2)],
@@ -1416,21 +1726,30 @@ function downloadJson(data, filename) {
 
   link.href = url;
   link.download = filename;
+
+  document.body.appendChild(link);
   link.click();
+  link.remove();
 
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function exportOne(id) {
-  const item = getHistory().find((entry) => entry.id === id);
+  const item = getHistory().find(
+    (entry) => entry.id === id
+  );
 
   if (item) {
     downloadJson(
       item,
-      `mobilitymind-observation-${id}.json`
+      `motus-observation-${id}.json`
     );
   }
 }
+
+// ============================================================
+// OPTIONAL SCREENING QUESTIONNAIRE
+// ============================================================
 
 function submitScreening(event) {
   event.preventDefault();
@@ -1447,75 +1766,141 @@ function submitScreening(event) {
   state.questionnaire = answers;
 
   localStorage.setItem(
-    "mobilitymind_screening",
+    SCREENING_KEY,
     JSON.stringify(answers)
   );
 
-  $("screeningFeedback").textContent =
-    "Responses saved on this device. No risk score was calculated.";
+  setText(
+    "screeningFeedback",
+    "Responses saved on this device. No risk score was calculated."
+  );
 }
+
+// ============================================================
+// DEMO DIALOG
+// ============================================================
 
 function setupDemo() {
   const dialog = $("demoDialog");
 
-  $("demoButton").addEventListener("click", () => {
-    dialog.showModal();
+  if (!dialog) return;
+
+  $("demoButton")?.addEventListener("click", () => {
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    }
   });
 
-  $("closeDemoButton").addEventListener("click", () => {
+  $("closeDemoButton")?.addEventListener("click", () => {
     dialog.close();
   });
 
-  $("closeDemoButton2").addEventListener("click", () => {
+  $("closeDemoButton2")?.addEventListener("click", () => {
     dialog.close();
   });
 }
 
-$("startCameraButton").addEventListener("click", startCamera);
+// ============================================================
+// UTILITIES
+// ============================================================
 
-$("startObservationButton").addEventListener(
-  "click",
-  beginObservation
-);
+function formatElapsed(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
 
-$("stopButton").addEventListener("click", stopEverything);
+  return (
+    `${String(minutes).padStart(2, "0")}:` +
+    `${String(remainingSeconds).padStart(2, "0")}`
+  );
+}
 
-$("saveObservationButton").addEventListener(
-  "click",
-  saveObservation
-);
+// ============================================================
+// INITIALIZATION
+// ============================================================
 
-$("screeningForm").addEventListener(
-  "submit",
-  submitScreening
-);
+function initializeApp() {
+  const requiredIds = [
+    "cameraVideo",
+    "overlayCanvas",
+    "startCameraButton",
+    "startObservationButton",
+    "stopButton",
+    "saveObservationButton",
+    "screeningForm",
+    "clearHistoryButton",
+    "historyList"
+  ];
 
-$("clearHistoryButton").addEventListener("click", () => {
-  if (
-    confirm(
-      "Delete all saved observation summaries from this browser?"
-    )
-  ) {
-    localStorage.removeItem("mobilitymind_history");
-    renderHistory();
+  const missingIds = requiredIds.filter((id) => !$(id));
+
+  if (missingIds.length) {
+    console.error(
+      "Motus is missing required HTML elements:",
+      missingIds
+    );
+
+    setMessage(
+      `Page setup error: missing elements ${missingIds.join(", ")}`
+    );
+
+    return;
   }
-});
 
-window.addEventListener("beforeunload", () => {
-  if (state.stream) {
-    state.stream.getTracks().forEach((track) => track.stop());
-  }
-});
+  $("startCameraButton").addEventListener(
+    "click",
+    startCamera
+  );
 
-window.addEventListener("resize", () => {
-  if (video.readyState >= 2) {
-    resizeCanvas();
-  }
+  $("startObservationButton").addEventListener(
+    "click",
+    beginObservation
+  );
 
-  if (state.summary && state.timeline.length >= 2) {
-    drawSummaryCharts();
-  }
-});
+  $("stopButton").addEventListener(
+    "click",
+    stopEverything
+  );
 
-setupDemo();
-renderHistory();
+  $("saveObservationButton").addEventListener(
+    "click",
+    saveObservation
+  );
+
+  $("screeningForm").addEventListener(
+    "submit",
+    submitScreening
+  );
+
+  $("clearHistoryButton").addEventListener("click", () => {
+    if (
+      confirm(
+        "Delete all saved observation summaries from this browser?"
+      )
+    ) {
+      localStorage.removeItem(HISTORY_KEY);
+      renderHistory();
+    }
+  });
+
+  window.addEventListener("beforeunload", () => {
+    state.stream?.getTracks().forEach((track) => track.stop());
+  });
+
+  window.addEventListener("resize", () => {
+    if (video?.readyState >= 2) {
+      resizeCanvas();
+    }
+
+    if (state.summary && state.timeline.length >= 2) {
+      drawSummaryCharts();
+    }
+  });
+
+  setupDemo();
+  renderHistory();
+
+  console.info("Motus JavaScript initialized successfully.");
+}
+
+initializeApp();
